@@ -19,6 +19,38 @@
  */
 
 export type NormalizedField = string | null;
+
+export type ValidationOutcome = {
+  ok: boolean;
+  errors: ValidationError[];
+  normalized: NormalizedField;
+};
+
+export type Presentness = 'absent' | 'provided-null' | 'provided-empty' | 'provided-value';
+
+export function classifyOptionalText(
+  value: string | null | undefined,
+): { normalized: NormalizedField; presentness: Presentness } {
+  if (value === null) return { normalized: null, presentness: 'provided-null' };
+  if (value === undefined) return { normalized: null, presentness: 'absent' };
+  if (typeof value !== 'string') return { normalized: null, presentness: 'provided-null' };
+  const trimmed = value.trim();
+  if (trimmed === '') return { normalized: null, presentness: 'provided-empty' };
+  return { normalized: trimmed, presentness: 'provided-value' };
+}
+
+export function validateOptionalText(
+  value: string | null | undefined,
+  fieldName = 'title',
+): ValidationOutcome {
+  const { normalized, presentness } = classifyOptionalText(value);
+  const errors: ValidationError[] = [];
+  if (presentness === 'provided-null' || presentness === 'provided-empty') {
+    errors.push({ field: fieldName, reason: 'when provided must be a non-empty title' });
+  }
+  return { ok: errors.length === 0, errors, normalized };
+}
+
 export type ActivityInput = {
   kind?: string | null;
   title?: string | null;
@@ -153,29 +185,26 @@ export function normalizeActivities(
 }
 
 /**
- * Ordena un conjunto de actividades normalizadas por order_index ascendente
- * para canonizar la representación antes del hash o el guardado.
+ * Produce un valor comparable y serializable para el hash de la petición.
+ * Conserva el orden semántico original del payload cuando no exista otro
+ * criterio diferenciador y conserva el contenido completo del conjunto.
  */
-export function canonicalOrder(activities: readonly ActivityNormalized[]): readonly ActivityNormalized[] {
-  return [...activities].sort((a, b) => {
-    const ai = a.order_index ?? -1;
-    const bi = b.order_index ?? -1;
-    if (ai !== bi) return ai - bi;
-    const at = a.title ?? '';
-    const bt = b.title ?? '';
-    if (at !== bt) return at < bt ? -1 : 1;
-    const ak = a.kind ?? '';
-    const bk = b.kind ?? '';
-    if (ak !== bk) return ak < bk ? -1 : 1;
-    const ai2 = a.instruction ?? '';
-    const bi2 = b.instruction ?? '';
-    if (ai2 !== bi2) return ai2 < bi2 ? -1 : 1;
-    const ad = a.duration_minutes ?? -1;
-    const bd = b.duration_minutes ?? -1;
-    return ad - bd;
-  });
+export interface CanonicalPayloadActivities {
+  readonly leaf: ActivityNormalized;
+  readonly originalIndex: number;
 }
 
+export function canonicalActivitiesForHash(
+  activities: readonly ActivityNormalized[],
+): readonly CanonicalPayloadActivities[] {
+  return activities.map((leaf, originalIndex) => ({ leaf, originalIndex }));
+}
+
+export function serializeCanonicalPayloadActivities(
+  activities: readonly CanonicalPayloadActivities[],
+): readonly ActivityNormalized[] {
+  return activities.map((item) => item.leaf);
+}
 /**
  * Valida un borrador de lección. Único obligatorio: title no vacío.
  * Las actividades se validan campo por campo; cero actividades es válido.
@@ -228,23 +257,26 @@ export function validateSaveRequest(input: SaveRequestInput): ValidationError[] 
     });
   }
 
-  if (input.title !== null && input.title !== undefined) {
-    const title = normalizeOptionalText(input.title);
-    if (title === null || title === '') {
-      errors.push({ field: 'title', reason: 'when provided must be a non-empty title' });
-    }
-  }
+  const titleOutcome = validateOptionalText(input.title);
+  errors.push(...titleOutcome.errors);
 
-  if (Array.isArray(input.activities)) {
-    input.activities.forEach((activity, index) => {
-      const activityErrors = validateActivity(activity);
-      activityErrors.forEach((err) => {
-        errors.push({
-          field: `activities[${index}].${err.field}`,
-          reason: err.reason,
+  if (input.activities !== null && input.activities !== undefined) {
+    if (!Array.isArray(input.activities)) {
+      errors.push({
+        field: 'activities',
+        reason: 'when present must be an array',
+      });
+    } else {
+      input.activities.forEach((activity, index) => {
+        const activityErrors = validateActivity(activity);
+        activityErrors.forEach((err) => {
+          errors.push({
+            field: `activities[${index}].${err.field}`,
+            reason: err.reason,
+          });
         });
       });
-    });
+    }
   }
 
   return errors;
@@ -253,16 +285,39 @@ export function validateSaveRequest(input: SaveRequestInput): ValidationError[] 
 /**
  * Normaliza un SaveRequestInput a la forma canónica usada por el servicio y por el
  * hash canónico de la petición.
+ *
+ * Contrato corregido:
+ * - si se envía title, debe ser un título no vacío; null/vacio se rechazan.
+ * - si se envía activities, debe ser un array; el resto de campos opcionales se
+ *   normalizan sin exterminar información.
+ * - la actividad y el orden semántico del payload completo se conservan antes del
+ *   hash y antes del guardado.
  */
 export function normalizeSaveRequest(input: SaveRequestInput): NormalizedSavePayload {
+  const titleOutcome = validateOptionalText(input.title);
+  const normalizedTitle = titleOutcome.normalized;
+  if (!titleOutcome.ok) {
+    throw new Error('normalizeSaveRequest received an invalid title');
+  }
+
+  let normalizedActivities: ActivityNormalized[];
+  if (input.activities !== null && input.activities !== undefined) {
+    if (!Array.isArray(input.activities)) {
+      throw new Error('normalizeSaveRequest received a non-array activities value');
+    }
+    normalizedActivities = normalizeActivities(input.activities);
+  } else {
+    normalizedActivities = [];
+  }
+
   return {
-    title: normalizeOptionalText(input.title),
+    title: normalizedTitle,
     lesson_text: normalizeOptionalText(input.lesson_text),
     theme: normalizeOptionalText(input.theme),
     level_context: normalizeOptionalText(input.level_context),
     objective: normalizeOptionalText(input.objective),
     methodology: normalizeOptionalText(input.methodology),
-    activities: normalizeActivities(input.activities),
+    activities: normalizedActivities,
   };
 }
 
@@ -313,32 +368,48 @@ export type MutationDedupRowInput = {
  * requestHash.
  */
 export async function canonicalRequestHash(input: IdempotencyKeyInput): Promise<Uint8Array> {
+  function normalizeSaveActivity(a: any): any {
+    return {
+      kind: normalizeOptionalText(a.kind ?? null),
+      title: normalizeOptionalText(a.title ?? null),
+      instruction: normalizeOptionalText(a.instruction ?? null),
+      order_index: a.order_index != null ? a.order_index : null,
+      duration_minutes: a.duration_minutes != null ? a.duration_minutes : null,
+    };
+  }
+
+  const rawPayload =
+    input.operationKind === 'save_lesson'
+      ? (input.payload as SaveRequestInput)
+      : (input.payload as LessonDraftInput);
+
   const normalizedPayload =
     input.operationKind === 'save_lesson'
-      ? canonicalOrder(normalizeActivities(input.payload as SaveRequestInput['activities']).map((a) => ({
-          kind: normalizeOptionalText(a.kind ?? null),
-          title: normalizeOptionalText(a.title ?? null),
-          instruction: normalizeOptionalText(a.instruction ?? null),
-          order_index: a.order_index != null ? a.order_index : null,
-          duration_minutes: a.duration_minutes != null ? a.duration_minutes : null,
-        })))
-      : canonicalOrder(normalizeActivities(input.payload as LessonDraftInput['activities'] ?? []).map((a) => ({
-          kind: normalizeOptionalText(a.kind ?? null),
-          title: normalizeOptionalText(a.title ?? null),
-          instruction: normalizeOptionalText(a.instruction ?? null),
-          order_index: a.order_index != null ? a.order_index : null,
-          duration_minutes: a.duration_minutes != null ? a.duration_minutes : null,
-        })));
+      ? serializeCanonicalPayloadActivities(
+          canonicalActivitiesForHash(
+            normalizeActivities(rawPayload.activities).map(normalizeSaveActivity),
+          ),
+        )
+      : serializeCanonicalPayloadActivities(
+          canonicalActivitiesForHash(
+            normalizeActivities(rawPayload.activities ?? []).map((a) => ({
+              kind: normalizeOptionalText(a.kind ?? null),
+              title: normalizeOptionalText(a.title ?? null),
+              instruction: normalizeOptionalText(a.instruction ?? null),
+              order_index: a.order_index != null ? a.order_index : null,
+              duration_minutes: a.duration_minutes != null ? a.duration_minutes : null,
+            })),
+          ),
+        );
 
   const object: Record<string, unknown> = {
     operation_kind: input.operationKind,
     academy_id: input.academyId,
     teacher_id: input.teacherId,
+    lesson_id: input.lessonId ?? null,
+    expected_revision: input.expectedRevision,
+    payload: normalizedPayload,
   };
-
-  if (input.lessonId != null) object.lesson_id = input.lessonId;
-  object.expected_revision = input.expectedRevision;
-  object.payload = normalizedPayload;
 
   const json = JSON.stringify(object);
   const encoder = new TextEncoder();
@@ -378,3 +449,5 @@ export function buildSavedResponse(input: {
     status: input.status,
   };
 }
+
+export type SerializedCanonicalPayload = readonly ActivityNormalized[];

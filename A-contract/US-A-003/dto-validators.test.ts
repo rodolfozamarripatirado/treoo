@@ -9,11 +9,12 @@ import {
   normalizeOptionalText,
   normalizeActivity,
   normalizeActivities,
-  canonicalOrder,
   normalizeCreateDraft,
   normalizeSaveRequest,
   canonicalRequestHash,
   buildSavedResponse,
+  canonicalActivitiesForHash,
+  serializeCanonicalPayloadActivities,
 } from './dto-validators.ts';
 
 function assert(cond: boolean, msg?: string) {
@@ -115,17 +116,19 @@ function typed<T>(v: unknown): T { return v as T; }
   assert(normalizeActivities([{ title: 'a' }, { title: '  b  ' }]).length === 2);
 }
 
-// canonicalOrder determinism
+// canonicalActivitiesForHash + serializeCanonicalPayloadActivities preserve canonical payload shape
 {
   const items = [
-    { kind: 'k2', title: 'z', instruction: 'i', order_index: 2, duration_minutes: 5 },
-    { kind: 'k1', title: 'a', instruction: 'i', order_index: 1, duration_minutes: 5 },
-    { kind: 'k2', title: 'z', instruction: 'i', order_index: 2, duration_minutes: 4 },
-  ].map(normalizeActivity);
-  const ordered = canonicalOrder(items);
-  assert(ordered[0].order_index === 1);
-  assert(ordered[1].order_index === 2 && ordered[1].duration_minutes === 4);
-  assert(ordered[2].order_index === 2 && ordered[2].duration_minutes === 5);
+    normalizeActivity({ kind: 'k2', title: 'z', instruction: 'i', order_index: 2, duration_minutes: 5 }),
+    normalizeActivity({ kind: 'k1', title: 'a', instruction: 'i', order_index: 1, duration_minutes: 5 }),
+    normalizeActivity({ kind: 'k2', title: 'z', instruction: 'i', order_index: 2, duration_minutes: 4 }),
+  ];
+  const canonical = canonicalActivitiesForHash(items);
+  const serialized = serializeCanonicalPayloadActivities(canonical);
+  assert(serialized.length === 3);
+  assert(serialized[0].order_index === 2 && serialized[0].title === 'z' && serialized[0].duration_minutes === 5);
+  assert(serialized[1].order_index === 1 && serialized[1].title === 'a' && serialized[1].duration_minutes === 5);
+  assert(serialized[2].order_index === 2 && serialized[2].title === 'z' && serialized[2].duration_minutes === 4);
 }
 
 // lesson draft validation
@@ -201,7 +204,7 @@ function typed<T>(v: unknown): T { return v as T; }
   deepEqual(r, { lesson_id: 'L1', committed_revision: 2, status: 'draft' });
 }
 
-// canonicalRequestHash determinism
+// canonicalRequestHash produces different hashes for differently ordered create payloads
 {
   const h1 = await canonicalRequestHash({
     operationKind: 'create_lesson',
@@ -219,7 +222,33 @@ function typed<T>(v: unknown): T { return v as T; }
   });
   assert(h1.length === 32);
   assert(h1.length === h2.length);
-  for (let i = 0; i < h1.length; i++) assert(h1[i] === h2[i], `hash byte ${i} differs`);
+  let diff = 0;
+  for (let i = 0; i < h1.length; i++) if (h1[i] !== h2[i]) diff++;
+  assert(diff > 0);
+}
+
+// canonicalRequestHash preserves original save payload order until a real ordering key exists
+{
+  const a = await canonicalRequestHash({
+    operationKind: 'save_lesson',
+    academyId: 'a',
+    teacherId: 't',
+    lessonId: 'L1',
+    expectedRevision: 1,
+    payload: { title: 'L', activities: [{ title: 'A' }, { title: 'B' }] },
+  });
+  const b = await canonicalRequestHash({
+    operationKind: 'save_lesson',
+    academyId: 'a',
+    teacherId: 't',
+    lessonId: 'L1',
+    expectedRevision: 1,
+    payload: { title: 'L', activities: [{ title: 'B' }, { title: 'A' }] },
+  });
+  assert(a.length === 32);
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff++;
+  assert(diff > 0);
 }
 
 // canonicalRequestHash differs on meaningful change
@@ -323,7 +352,7 @@ function typed<T>(v: unknown): T { return v as T; }
   }
 }
 
-// canonicalRequestHash reorders stable canon for equivalent unordered payload
+// canonicalRequestHash produces different hashes for differently ordered create payloads
 {
   const shuffled = await canonicalRequestHash({
     operationKind: 'create_lesson',
@@ -340,7 +369,22 @@ function typed<T>(v: unknown): T { return v as T; }
     payload: { activities: [{ title: 'a' }, { title: 'b' }, { title: 'c' }] },
   });
   assert(shuffled.length === 32);
-  for (let i = 0; i < shuffled.length; i++) assert(shuffled[i] === sorted[i], `canonical order should match at byte ${i}`);
+  let diff = 0;
+  for (let i = 0; i < shuffled.length; i++) if (shuffled[i] !== sorted[i]) diff++;
+  assert(diff > 0);
+}
+
+// serializeCanonicalPayloadActivities round-trips canonical payload representation
+{
+  const normalized = [
+    { kind: 'k2', title: 'z', instruction: 'i', order_index: 2, duration_minutes: 5 },
+    { kind: 'k1', title: 'a', instruction: 'i', order_index: 1, duration_minutes: 5 },
+  ] as ActivityNormalized[];
+  const canonical = canonicalActivitiesForHash(normalized);
+  const serialized = serializeCanonicalPayloadActivities(canonical);
+  assert(serialized.length === 2);
+  assert(serialized[0].order_index === 2 && serialized[0].title === 'z');
+  assert(serialized[1].order_index === 1 && serialized[1].title === 'a');
 }
 
 let passed = 0;
