@@ -221,30 +221,98 @@ CREATE TABLE treoo.mutation_dedup (
     REFERENCES treoo.lesson (academy_id, lesson_id) ON DELETE RESTRICT
 );
 
--- Dominio y semántica del ledger (no ejecutado aquí; solo contexto para revisión)
+-- Dominio y semántica del ledger (protocolo ejecutable propuesto, no ejecutado aquí)
 --
--- Protocolo de transacción:
---   1. Autenticar y derivar academy_id/teacher_id desde sesión del servidor.
---   2. Buscar la clave en ese alcance. Misma operation_kind + request_hash devuelve
---      la respuesta guardada textualmente; cualquier diferencia devuelve
---      IDEMPOTENCY_KEY_REUSED.
---   3. Si no existe, ejecutar CAS de revisión y sincronización de activities o
---      creación de lesson, y luego insertar la fila del ledger en la MISMA
---      transacción.
---   4. Commit antes de devolver éxito. Nunca devolver éxito antes del commit.
+-- Scope de la clave: (academy_id, teacher_id, operation_key).
+-- El operation_key identifica semánticamente la operación del cliente; el mismo
+-- key puede usarse por create_lesson y save_lesson si se desea, pero el dao de
+-- la clave compuesto por scope + key puede tener duplicados que se diferencian
+-- por operation_kind y request_hash.
 --
--- Si dos llamadas compiten por la misma clave, la perdedora falla con violación de
--- clave única, revierte, vuelve a leer la fila ganadora y aplica el paso 2.
--- Tras revertir no queda ninguna fila del ledger, y el cliente puede repetir la
--- misma clave.
+-- Hash canónico: bytes SHA-256 de 32 octetos de la representación canónica de la
+-- petición normalizada, incluyendo obligatoriamente:
+--   - operation_kind
+--   - expectedRevision
+--   - normalized payload / activity set used for the mutation
+-- La normalización canónica de payload se decide en servicio; lo no negociable es
+-- que el mismo key y el mismo request_hash devuelven exactamente la misma respuesta.
 --
--- La FK hacia lesson se satisface en el caso de creación porque la fila del ledger
--- se inserta después de crear la lección dentro de la misma transacción.
+-- Protocolo de transacción (create_lesson o save_lesson):
 --
--- Estado de la respuesta: el shapes exacto de response_json es decisión de
--- Arquitectura/PO. Para demo se sugiere algo mínimo que permita el replay seguro
--- (p. ej. lesson_id + committed_revision + status), a menos que el servicio
--- requiera un response body limitado. La revisión actual no define el response.
+-- 1. Autenticar y derivar academy_id/teacher_id desde sesión del servidor.
+-- 2. Validar payload con los validadores del paquete (dto-validators.ts).
+-- 2b. Calcular request_hash canónico por encima del payload validado con la misma
+--     normalización de encriptación usada para guardar la respuesta.
+-- 3. Buscar la clave en ese alcance:
+--     SELECT operation_kind, request_hash, lesson_id, committed_revision, response_json,
+--            completed_at
+--     FROM treoo.mutation_dedup
+--     WHERE academy_id = $academy_id
+--       AND teacher_id = $teacher_id
+--       AND operation_key = $operation_key
+--     FOR UPDATE;
+--     Si la fila existe:
+--       - mismo operation_kind Y mismo request_hash → devolver
+--         response_json textualmente (IDEMPOTENT_REPLAY). No toca lesson, no
+--         toca activities, no toca revision.
+--       - operation_kind distinto O request_hash distinto →
+--         IDEMPOTENCY_KEY_REUSED. No muta nada; la respuesta de error puede
+--         incluir los valores existentes para diagnóstico, pero no revela
+--         contenido no autorizado.
+-- 4. Si no existe la clave:
+--     a. Create:
+--        - INSERT lesson (academy_id, lesson_id, teacher_id, title, ...) con
+--          revision = 1, status = 'draft'.
+--        - Si payload tiene actividades, INSERT/REEMPLAZAR el conjunto completo
+--          de activities para ese (academy_id, lesson_id) en la misma transacción.
+--        - INSERT mutation_dedup (academy_id, teacher_id, operation_key,
+--          operation_kind = 'create_lesson', request_hash, lesson_id,
+--          committed_revision = 1, response_json = response guardada).
+--     b. Save:
+--        - UPDATE lesson SET revision = revision + 1, ... , updated_at = now()
+--          WHERE academy_id = $academy_id AND lesson_id = $lesson_id
+--            AND teacher_id = $teacher_id
+--            AND revision = $expectedRevision
+--          RETURNING revision, ...;
+--        - Si la actualización retorna fila:
+--            - DELETE FROM treoo.activity WHERE academy_id = $academy_id
+--                AND lesson_id = $lesson_id;
+--            - INSERT conjunto completo de actividades validadas para ese
+--                (academy_id, lesson_id). Si no hay actividades, la operación
+--                queda con el conjunto vacío.
+--            - INSERT mutation_dedup (..., operation_kind = 'save_lesson',
+--                request_hash, lesson_id, committed_revision = nueva revisión,
+--                response_json = response guardada).
+--        - Si la actualización NO retorna fila: abandonar transacción sin tocar
+--          activities; responder CONFLICT / recurso no visible.
+-- 5. COMMIT.
+-- 6. Responder. Nunca responder éxito antes del commit.
+--
+-- Manejo de carrera por clave única:
+--   - Si dos cypress compiten por la misma clave, la perdedora falla con violación
+--     de clave única en mutation_dedup, revierte, vuelve a leer la fila ganadora
+--     y aplica el paso 3. Tras la reversión no queda ninguna fila del ledger, y el
+--     cliente puede repetir la misma clave.
+--   - La FK hacia lesson se satisface en el caso de creación porque la fila del
+--     ledger se inserta después de crear la lección dentro de la misma transacción.
+--
+-- Retención de respuesta: el response_json debe ser el contenido mínimo necesario
+-- para reproducir la respuesta original de forma segura y auditable. Decisiones de
+-- qué incluir (p. ej. lesson_id + committed_revision + status, o cuerpo limitado)
+-- requieren Arquitectura/PO; este SQL no los define. Respuestas que contengan
+-- contenido sensible no deben ser reutilizadas sin revisar privacidad.
+--
+-- Estado del contracto de respuesta: este SQL establece la tabla, las llaves
+-- foráneas, los checks y el protocolo de transacción, pero no ejecuta el servidor
+-- ni define el formato exacto de response_json. Se revisará antes de la integración.
+
+-- Nota operativa de revisión DBA / PO:
+--   Este bloque SQL es ejecutable en una base vacía/seedada que ya contiene las
+--   tablas academy, teacher, academy_teacher, lesson y activity. No ejecutar aquí.
+--   El seed exacto preflight fue revisado línea por línea contra
+--   `/home/node/.cache/treoo-po/data-review-20261116.md`.
+--   A continuación se documentan los casos de verificación que deben cubrir la
+--   revisión y, eventualmente, los tests de integración; no se ejecutan aquí.
 
 -- Casos de verificación adicionales (no ejecutados)
 --
@@ -254,6 +322,48 @@ CREATE TABLE treoo.mutation_dedup (
 --   preflight aborta y deja todas las filas intactas.
 -- - Preinsertar un vínculo de fixture en una academia inesperada: el preflight
 --   aborta; sin inserts parciales.
+
+-- Identificadores fijos del seed (revisable solo junto con el SQL anterior)
+--
+-- ### academias
+--
+-- | label | uuid |
+-- |-------|------|
+-- | Demo Academy A | 10000000-0000-4000-8000-000000000001 |
+-- | Demo Academy B | 10000000-0000-4000-8000-000000000002 |
+--
+-- ### teachers
+--
+-- | label | uuid |
+-- |-------|------|
+-- | Ana Ruiz | 20000000-0000-4000-8000-000000000001 |
+-- | Alex Kim | 20000000-0000-4000-8000-000000000002 |
+-- | Bruno Vega | 20000000-0000-4000-8000-000000000003 |
+--
+-- ### academy_teacher membership
+--
+-- | academy uuid | teacher uuid | note |
+-- |------|-----------|------|
+-- | Demo Academy A | Ana Ruiz | same academy, distinct teacher from Alex |
+-- | Demo Academy A | Alex Kim | second teacher in Academy A |
+-- | Demo Academy B | Bruno Vega | isolated teacher in Academy B |
+--
+-- ### preinserted lesson guard
+--
+-- | lesson uuid | note |
+-- |-----------|------|
+-- | 30000000-0000-4000-8000-000000000001 | FK preinsert only, body discarded |
+--
+-- ### fixed-id verification notes (do not execute)
+--
+-- - Ana and Alex must both belong to Academy A and remain distinct teachers in the
+--   same seed. The membership rows above make that explicit.
+-- - If the seed is applied twice, the final state should be exactly two academias,
+--   three teachers and three memberships, with no duplicates.
+-- - If Alex appears under a different name before the seed runs, the preflight must
+--   abort without inserting anything and leave the existing state intact.
+-- - If Alex is preinserted into a different academy, the preflight must abort due to
+--   the membership conflict, not proceed to insert.
 -- - Los dos teachers Ana y Alex en Academy A solo acceden a lecciones de A bajo su
 --   propia autorización; Bruno en B no las accede.
 -- - Crear/guardar repetidamente con la misma clave en el mismo alcance y hash
@@ -266,3 +376,36 @@ CREATE TABLE treoo.mutation_dedup (
 -- - Fallo de transacción antes del insert del ledger o antes del commit: la mutación
 --   de la lección y la fila del dedup se revierten juntas; la misma clave puede
 --   volver a intentarse.
+
+-- Protocolo canónico de hash y respuesta para revisión de implementación (no ejecutado)
+--
+-- 1. request_hash se calcula sobre bytes canonizados de:
+--       {
+--         "operation_kind": "create_lesson" | "save_lesson",
+--         "academy_id": "<uuid>",
+--         "teacher_id": "<uuid>",
+--         "lesson_id": "<uuid, solo para save>",
+--         "expectedRevision": <integer>,
+--         "payload": <representación canonizada usada por la operación>
+--       }
+--    Se recomienda canonizar:
+--      - orden de claves fijo,
+--      - números como cadenas decimales sin notación científica,
+--      - fechas como ISO-8601 con zona fija,
+--      - textos recortados y normalizados igual que en la capa de validación,
+--      - conjunto de activities ordenado por order_index ascendente antes de
+--        calcular el hash.
+-- 2. El response_json guardado se calcula UNA SOLA VEZ al confirmar la operación
+--    y se reutiliza textualmente para IDEMPOTENT_REPLAY. No se recomputa, no se
+--    revalida, no se reencUENTRA de la lección en cada replay.
+-- 3. IDEMPOTENT_REPLAY devuelve exactamente el mismo cuerpo HTTP/JSON que la
+--    operación original, incluyendo código de respuesta y headers reproducibles
+--    si el servicio lo define, pero sin mutar ni recomputar nada.
+-- 4. IDEMPOTENCY_KEY_REUSED es un error (p. ej. 409 o 422 según diseño) con
+--    código explícito IDEMPOTENCY_KEY_REUSED y, opcionalmente, los campos
+--    existentes necesarios para diagnóstico (operation_kind, lesson_id,
+--    committed_revision existente), sin incluir payload ni response del otro
+--    cliente si no se desea exponerlo.
+-- 5. La clave se puede reintentar indefinidamente si la transacción falla antes
+--    del commit; el fallo no deja estado parcialmente guardado porque
+--    mutation_dedup y lesson/activities comparten la misma transacción.

@@ -14,10 +14,14 @@ Academias ficticias para demo:
 
 Docentes:
 - Ana Ruiz — demo teacher, asignada a Demo Academy A
+- Alex Kim — demo teacher, asignado a Demo Academy A
 - Bruno Vega — demo teacher, asignado a Demo Academy B
 
-Aislamiento objetivo: ninguna operación de un docente cruza al otro docente ni a la
-otra academia sin autorización real.
+Aislamiento objetivo: ninguna operación de un docente cruza al otro docente ni a la otra academia sin autorización real.
+
+Alex pertenece al mismo seed y a la misma academia que Ana, pero es un docente distinto:
+su ámbito es `(academy_id = Demo Academy A, teacher_id = Alex)`. Los casos siguientes
+suponen que Ana y Alex tienen sesiones resueltas distintas.
 
 ## 3. Positivos
 
@@ -54,13 +58,22 @@ otra academia sin autorización real.
   - primera mutación exitosa -> `revision = n+1`.
   - preview devuelve exactamente esa versión sin incrementarla.
 
-## 4. Negativos con dos academias ficticias
+## 4. Negativos con dos academias ficticias y dos docentes por academia
 
 ### N-01 Lectura/edición/preview cruzada
 
 - Entrada: A/Ana intenta leer, editar o previsualizar lección de B/Bruno aunque conozca
   el UUID.
 - Esperado: `UNAUTHORIZED` / `NOT_FOUND` según operación concreta; no se permite.
+
+### N-01b Lectura/edición/preview entre docentes del mismo seed
+
+- Entrada: A/Alex intenta leer, editar o previsualizar lección creada por/session Ana
+  en Demo Academy A.
+- Esperado: no se permite; ambas pertenecen a la misma academia pero a teachers
+  distintos, y el ámbito de la lección es `(academy_id, teacher_id)`.
+- Esperado: isoación entre Ana y Alex en el mismo seed; presentar la lección a Alex
+  requiere autorización real, no solo compartir academia.
 
 ### N-02 Lección con teacher de otra academia
 

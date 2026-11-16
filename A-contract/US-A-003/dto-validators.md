@@ -180,14 +180,25 @@ export type ActivityInput = {
   duration_minutes?: number | null;
 };
 
+export type NormalizedField = string | null;
+
+export type ActivityNormalized = {
+  kind: NormalizedField;
+  title: NormalizedField;
+  instruction: NormalizedField;
+  order_index: number | null;
+  duration_minutes: number | null;
+};
+
 export type ValidationError = {
   field: string;
   reason: string;
 };
 
-export function normalizeOptionalText(value: string | null | undefined): string | null {
+export function normalizeOptionalText(value: string | null | undefined): NormalizedField {
   if (value === null || value === undefined) return null;
-  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
   return trimmed === '' ? null : trimmed;
 }
 
@@ -209,6 +220,16 @@ export function validateActivity(input: ActivityInput): ValidationError[] {
 
   return errors;
 }
+
+export function normalizeActivity(input: ActivityInput): ActivityNormalized {
+  return {
+    kind: normalizeOptionalText(input.kind),
+    title: normalizeOptionalText(input.title),
+    instruction: normalizeOptionalText(input.instruction),
+    order_index: input.order_index != null ? input.order_index : null,
+    duration_minutes: input.duration_minutes != null ? input.duration_minutes : null,
+  };
+}
 ```
 
 Reglas expresadas en código:
@@ -217,8 +238,53 @@ Reglas expresadas en código:
 - `kind`, `title`, `instruction`:
   - si están presentes y no nulos, se aceptan tanto cadena no vacía como vacía;
   - no se tratan como error de validación en esta revisión.
+- `normalizeActivity` convierte entrada en la forma canónica usada para guardado y
+  para el hash canónico; campos ausentes/nulos pasan a null, strings no vacíos se
+  recortan.
 
-## 10. Validador de lección
+## 10. Normalización de conjunto de actividades
+
+El conjunto de actividades se normaliza y luego se canoniza por orden para uso en
+creación/guardado y para el hash de petición.
+
+```ts
+export function normalizeActivities(
+  input: readonly ActivityInput[] | null | undefined,
+): ActivityNormalized[] {
+  if (!Array.isArray(input)) return [];
+  return input.map(normalizeActivity);
+}
+
+export function canonicalOrder(activities: readonly ActivityNormalized[]): readonly ActivityNormalized[] {
+  return [...activities].sort((a, b) => {
+    const ai = a.order_index ?? -1;
+    const bi = b.order_index ?? -1;
+    if (ai !== bi) return ai - bi;
+    const at = a.title ?? '';
+    const bt = b.title ?? '';
+    if (at !== bt) return at < bt ? -1 : 1;
+    const ak = a.kind ?? '';
+    const bk = b.kind ?? '';
+    if (ak !== bk) return ak < bk ? -1 : 1;
+    const ai2 = a.instruction ?? '';
+    const bi2 = b.instruction ?? '';
+    if (ai2 !== bi2) return ai2 < bi2 ? -1 : 1;
+    const ad = a.duration_minutes ?? -1;
+    const bd = b.duration_minutes ?? -1;
+    return ad - bd;
+  });
+}
+```
+
+Reglas:
+- `normalizeActivities` retorna un arreglo vacío para entrada ausente/nula/no array.
+- `canonicalOrder` ordena por `order_index` ascendente (null antes que cualquier
+  valor presente), con desempates deterministas por título, kind, instrucción y
+  duración.
+- La misma lista de actividades presentada en diferente orden de envío produce el
+  mismo conjunto canonizado.
+
+## 11. Validador de lección
 
 Regla solo para `title` en creación:
 - obligatorio en creación
@@ -237,7 +303,7 @@ export type LessonDraftInput = {
   level_context?: string | null;
   objective?: string | null;
   methodology?: string | null;
-  activities?: ActivityInput[];
+  activities?: readonly ActivityInput[];
 };
 
 export function validateLessonDraft(input: LessonDraftInput): ValidationError[] {
@@ -260,9 +326,98 @@ export function validateLessonDraft(input: LessonDraftInput): ValidationError[] 
 
   return errors;
 }
+
+export function normalizeCreateDraft(input: LessonDraftInput): {
+  title: string;
+  lesson_text: NormalizedField;
+  theme: NormalizedField;
+  level_context: NormalizedField;
+  objective: NormalizedField;
+  methodology: NormalizedField;
+  activities: ActivityNormalized[];
+} {
+  return {
+    title: normalizeOptionalText(input.title),
+    lesson_text: normalizeOptionalText(input.lesson_text),
+    theme: normalizeOptionalText(input.theme),
+    level_context: normalizeOptionalText(input.level_context),
+    objective: normalizeOptionalText(input.objective),
+    methodology: normalizeOptionalText(input.methodology),
+    activities: normalizeActivities(input.activities),
+  };
+}
 ```
 
-## 11. Validador de duración
+## 12. Validador de guardado
+
+- `expectedRevision` obligatorio positivo.
+- Campos opcionales se validan solo si se envían.
+- Las actividades se validan campo por campo.
+- La salida normalizada se usa tanto para la mutación como para el hash canónico.
+
+```ts
+export type SaveRequestInput = {
+  expectedRevision: number;
+  title?: string | null;
+  lesson_text?: string | null;
+  theme?: string | null;
+  level_context?: string | null;
+  objective?: string | null;
+  methodology?: string | null;
+  activities?: readonly ActivityInput[];
+};
+
+export function validateSaveRequest(input: SaveRequestInput): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision <= 0) {
+    errors.push({
+      field: 'expectedRevision',
+      reason: 'must be a positive integer',
+    });
+  }
+
+  if (input.title !== null && input.title !== undefined) {
+    const title = normalizeOptionalText(input.title);
+    if (title === null || title === '') {
+      errors.push({ field: 'title', reason: 'when provided must be a non-empty title' });
+    }
+  }
+
+  if (Array.isArray(input.activities)) {
+    input.activities.forEach((activity, index) => {
+      const activityErrors = validateActivity(activity);
+      activityErrors.forEach((err) => {
+        errors.push({ field: `activities[${index}].${err.field}`, reason: err.reason });
+      });
+    });
+  }
+
+  return errors;
+}
+
+export function normalizeSaveRequest(input: SaveRequestInput): {
+  title: NormalizedField;
+  lesson_text: NormalizedField;
+  theme: NormalizedField;
+  level_context: NormalizedField;
+  objective: NormalizedField;
+  methodology: NormalizedField;
+  activities: ActivityNormalized[];
+} {
+  return {
+    title: normalizeOptionalText(input.title),
+    lesson_text: normalizeOptionalText(input.lesson_text),
+    theme: normalizeOptionalText(input.theme),
+    level_context: normalizeOptionalText(input.level_context),
+    objective: normalizeOptionalText(input.objective),
+    methodology: normalizeOptionalText(input.methodology),
+    activities: normalizeActivities(input.activities),
+  };
+}
+```
+
+## 13. Validador de duración
 
 Rechaza solo:
 - ausente/nulo: válido
@@ -275,25 +430,177 @@ export function validateDuration(value: unknown): boolean {
 }
 ```
 
-## 12. Normalización consistente para borrador
+## 14. Hash canónico de petición para idempotencia
 
-Regla mínima para FE/BE:
-- opcionales se aceptan como nulo, vacío o cadena no vacía;
-- si el modelo almacena nulos, cadena vacía se normaliza a nulo;
-- si el modelo almacena texto, cadena vacía se conserva como texto vacío;
-- la decisión se aplica de forma consistente en lectura y escritura;
-- lo rechazado es contenido obligatorio faltante o inválido, no ausencia de
-  opcionales.
+El hash canónico se usa como clave del significado de idempotentes. El mismo
+`operationKind` y la misma petición canonizada producen el mismo hash; los cambios
+en cualquier componente relevante producen un hash distinto.
 
-## 13. Validación de ámbito
+Canonización mínima incluida en el hash:
+- `operation_kind`
+- `academy_id`
+- `teacher_id`
+- `lesson_id` (solo para save)
+- `expected_revision`
+- `payload` canonizado: mismo orden de claves, números como cadenas decimales sin
+  notación científica, textos recortados y normalizados con la misma regla que el
+  servicio, y conjunto de activities ordenado con `canonicalOrder` antes de
+  calcular el hash.
 
-- `academy_id` y `teacher_id` deben coincidir con la sesión resuelta.
-- la operación solo procede si la lección bajo estudio pertenece a ese mismo
-  `(academy_id, teacher_id)`.
-- Ningún payload puede cambiar `academy_id` en la operación sin remodelación
-  explícita autorizada; eso está fuera del corte manual.
+Requisito de la clave:
+- El `request_hash` de `mutation_dedup` se construye a partir de los mismos
+  componentes que este hash canónico.
+- Una petición idéntica produce el mismo hash; una petición distinta produce un hash
+  distinto; por lo tanto el servidor no confunde operaciones diferentes con el mismo
+  `operation_kind` solo porque compartan ámbito.
 
-## 14. Conflictos/replicación en DTO
+```ts
+export type IdempotencyKeyInput = {
+  operationKind: 'create_lesson' | 'save_lesson';
+  academyId: string;
+  teacherId: string;
+  lessonId?: string;
+  expectedRevision: number;
+  payload: unknown;
+};
+
+export async function canonicalRequestHash(input: IdempotencyKeyInput): Promise<Uint8Array> {
+  const normalizedPayload =
+    input.operationKind === 'save_lesson'
+      ? canonicalOrder(normalizeActivities(input.payload as SaveRequestInput['activities']).map((a) => ({
+          kind: normalizeOptionalText(a.kind ?? null),
+          title: normalizeOptionalText(a.title ?? null),
+          instruction: normalizeOptionalText(a.instruction ?? null),
+          order_index: a.order_index != null ? a.order_index : null,
+          duration_minutes: a.duration_minutes != null ? a.duration_minutes : null,
+        })))
+      : canonicalOrder(normalizeActivities(input.payload as LessonDraftInput['activities'] ?? []).map((a) => ({
+          kind: normalizeOptionalText(a.kind ?? null),
+          title: normalizeOptionalText(a.title ?? null),
+          instruction: normalizeOptionalText(a.instruction ?? null),
+          order_index: a.order_index != null ? a.order_index : null,
+          duration_minutes: a.duration_minutes != null ? a.duration_minutes : null,
+        })));
+
+  const object: Record<string, unknown> = {
+    operation_kind: input.operationKind,
+    academy_id: input.academyId,
+    teacher_id: input.teacherId,
+  };
+
+  if (input.lessonId != null) object.lesson_id = input.lessonId;
+  object.expected_revision = input.expectedRevision;
+  object.payload = normalizedPayload;
+
+  const json = JSON.stringify(object);
+  const encoder = new TextEncoder();
+  const data = encoder.encode(json);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  return new Uint8Array(hashBuffer);
+}
+```
+
+Reglas expresadas en código:
+- El hash se calcula sobre la representación JSON canonizada de la petición.
+- El mismo input produce el mismo `Uint8Array` de 32 octetos.
+- Cambios en `operationKind`, `academyId`, `teacherId`, `lessonId`, `expectedRevision`
+  o cualquier actividad normalizada producen hash distinto.
+- La canonización de actividades garantiza que listas equivalentes con distinto orden
+  de envío producen el mismo hash.
+- `canonicalRequestHash` no es blocking en principio de ejecución; si el servicio
+  elige SHA-256 síncrono, debe usar un wrapper equivalente.
+
+## 15. Protocolo de save y replay
+
+Este servicio propone el protocolo mínimo para save con idempotencia semántica.
+
+### Requisitos generales
+
+- Save se ejecuta en una transacción ACID que incluye: lectura de la lección actual,
+  comparación CAS de `expectedRevision`, actualización de lección, actualización del
+  conjunto de actividades para el mismo `(academy_id, lesson_id)` y escritura del
+  registro de deduplication.
+- La respuesta mínima de save se construye y se guarda UNA VEZ dentro de esa
+  transacción, antes o durante el commit; no se recomputa ni se re-leen datos para
+  el replay.
+- Si el save es confirmado, la respuesta guardada se retorna textualmente para
+  `IDEMPOTENT_REPLAY` si el servidor recibe el mismo `operationKind` + requestHash
+  válido.
+- Para save que falla por payload no válido, el servidor retorna error normal y NO
+  escribe registro de `mutation_dedup` con respuesta de éxito.
+- Para save que falla por `expectedRevision` incorrecto, el servidor retorna
+  `CONFLICT` sin modificar lección ni activities ni escribir registro de
+  `mutation_dedup`.
+
+### Guardado por primera vez
+
+1. Servidor valida `SaveRequest` completo con el validador de petición.
+2. Transacción abre y lee lección + revision actual para `(academy_id, lesson_id)`.
+3. Transacción compara `expectedRevision` con la revision actual; si no coinciden -
+   rollback y respuesta `CONFLICT`.
+4. Si la revisión actual coincide, transacción aplica el nuevo título/fields
+   opcionales y el nuevo conjunto de actividades normalizado para ese lesson y ámbito.
+5. Transacción calcula `requestHash` sobre la misma petición canonizada usada en
+   `canonicalRequestHash`.
+6. Transacción escribe o actualiza `mutation_dedup` para esa `operation_key` con el
+   `requestHash` aplicado, la `committed_revision` y la respuesta mínima.
+7. Transacción commita, y el servidor retorna la respuesta mínima guardada.
+
+### Respuesta de replay semántica
+
+- Si una nueva petición llega con el mismo `operationKind` + `requestHash` que ya
+  existe en `mutation_dedup` como resultado confirmado, el servidor retorna la misma
+  respuesta mínima guardada.
+- El servidor no vuelve a ejecutar la mutación ni vuelve a calcular la respuesta.
+- Si el servidor puede retornar `IDEMPOTENT_REPLAY` textualmente desde el registro,
+  lo hace y no cambia la lección ni las activities.
+
+### Rechazo por clave reutilizada
+
+- Si la transacción encuentra la misma `operation_key` con un `requestHash` distinto
+  al entrante, el servidor rechaza con `IDEMPOTENT_KEY_REUSED` y no aplica la
+  mutación.
+- Esa regla preserva que una clave semántica no se sobreescriba con otra operación.
+
+### Nota de implementación sobre concurrentes
+
+- La consulta de existencia del registro en `mutation_dedup` y la operación de guardar
+  deben ocurrir bajo la misma transacción y el mismo cierre de concurrencia que la
+  actualización de lección/activities.
+- La implementación concreta (SELECT FOR UPDATE, bloqueo de fila, llave única con
+  upsert atómico, etc.) se elige en el corte de migración; esta propuesta solo fija
+  que la validación, la mutación y el idempotente no puedan separarse en pasos
+  eventualmente consistency.
+
+```ts
+export type MutationDedupResponse = {
+  lesson_id: string;
+  committed_revision: number;
+  status: string;
+};
+
+export function buildSavedResponse(input: {
+  lessonId: string;
+  committedRevision: number;
+  status: string;
+}): MutationDedupResponse {
+  return {
+    lesson_id: input.lessonId,
+    committed_revision: input.committedRevision,
+    status: input.status,
+  };
+}
+```
+
+Reglas expresadas en código:
+- La respuesta guardada se construye UNA VEZ al confirmar la operación.
+- El mismo estado confirmado produce la misma respuesta guardada.
+- El servidor retorna esa respuesta textualmente para `IDEMPOTENT_REPLAY` sin
+  recomputar, revalidar ni re-leer estado.
+- El servicio define si se incluye más o menos; esta propuesta es solo la forma
+  mínima sugerida.
+
+## 16. Conflictos/replicación en DTO
 
 - toda mutación que avanza revisión usa `expectedRevision`;
 - si la comparación atómica falla, respuesta `CONFLICT` sin modificar lesson ni
@@ -301,9 +608,22 @@ Regla mínima para FE/BE:
 - no se acepta reintento automático de escritura con `expectedRevision` actualizado
   por servidor.
 
-## 15. Reglas mínimas de colección de actividades
+## 17. Reglas mínimas de colección de actividades
 
 - orden único dentro del borrador por `(academy_id, lesson_id, order_index)`;
 - guardado exitoso sincroniza el conjunto completo enviado para el ámbito;
 - borrador sin actividades es lista vacía válida;
 - si se elimina o reordena, el conjunto restante mantiene orden coherente.
+
+## 19. Pendientes de aprobación externa
+
+Pendiente de Arquitectura / UX / Cian:
+- forma exacta del registro de deduplicación y el formato de respuesta guardada;
+- mecanismo concreto de coordinación de concurrencia de save;
+- formato de respuesta mínima que el servicio expondrá oficialmente;
+- alcance real de validación/derivación de llave en servidor;
+- decisión de si la plataforma prefiere SHA canónico asíncrono o síncrono.
+
+Esta propuesta no ejecuta ni aprueba esos puntos; fija solo el contrato mínimo
+necesario para que el servidor sea coherente entre validación, mutación,
+idempotencia y reproducibilidad de respuesta.
