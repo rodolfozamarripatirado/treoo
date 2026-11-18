@@ -1,0 +1,9 @@
+{
+  "name": "treoo",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test:validators": "node A-contract/US-A-003/dto-validators.test.ts",
+    "test:enabler": "bash A-contract/US-A-003/tests.sh"
+  }
+}

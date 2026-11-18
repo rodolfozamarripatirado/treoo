@@ -1,0 +1,9 @@
+{
+  "name": "treoo-us-a-003-validators",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node A-contract/US-A-003/dto-validators.test.ts"
+  }
+}
