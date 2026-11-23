@@ -152,6 +152,13 @@ describe('multi-academy isolation (TD-02)', () => {
     expect((await app.inject({ method: 'PUT', url: `/api/lessons/${IDS.lesson}`, payload: { title: 'x', expectedRevision: 1 }, ...as(olivia) })).statusCode).toBe(403);
   });
 
+  it('material stays private to its owner within the academy', async () => {
+    const alex = await login('alex@northbridge.demo');
+    expect((await app.inject({ url: `/api/materials/${IDS.material}`, ...as(alex) })).statusCode).toBe(404);
+    const r = await app.inject({ method: 'POST', url: '/api/lessons', payload: { title: 'Borrow', materialId: IDS.material }, ...as(alex) });
+    expect(r.statusCode).toBe(400);
+  });
+
   it('students cannot reach teacher preparation', async () => {
     const sam = await login('sam@northbridge.demo');
     expect((await app.inject({ url: '/api/lessons', ...as(sam) })).statusCode).toBe(403);
@@ -261,6 +268,20 @@ describe('classroom, diary and practice', () => {
     expect(tooHigh.statusCode).toBe(400);
     const progress = (await app.inject({ url: '/api/portal/progress', ...as(sam) })).json();
     expect(progress.topics[0]).toMatchObject({ topic: 'Present Perfect' });
+  });
+
+  it('assigns lesson exercises to a group, only from the same academy', async () => {
+    const ana = await login('ana@northbridge.demo');
+    const ex = (await app.inject({ url: `/api/exercises?lessonId=${IDS.lesson}`, ...as(ana) })).json();
+    const r = await app.inject({ method: 'POST', url: '/api/assignments', payload: { groupId: IDS.groupB1, exerciseIds: [ex[0].id, ex[1].id], dueOn: '2026-12-01' }, ...as(ana) });
+    expect(r.statusCode).toBe(201);
+    expect(r.json()).toHaveLength(2);
+    const bruno = await login('bruno@westport.demo');
+    const cross = await app.inject({ method: 'POST', url: '/api/assignments', payload: { groupId: IDS.groupWestport, exerciseIds: [ex[0].id] }, ...as(bruno) });
+    expect(cross.statusCode).toBe(400);
+    const alex = await login('alex@northbridge.demo');
+    const notMine = await app.inject({ method: 'POST', url: '/api/assignments', payload: { groupId: IDS.groupB1, exerciseIds: [ex[0].id] }, ...as(alex) });
+    expect(notMine.statusCode).toBe(403);
   });
 
   it('gives staff a per-group and per-topic view', async () => {

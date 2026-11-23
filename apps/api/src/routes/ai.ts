@@ -26,10 +26,15 @@ export const aiRoutes: FastifyPluginAsync = async (app) => {
       preferences: optText(1000),
     }), req.body);
     let text = body.sourceText;
-    if (!text && body.materialId) text = (await getMaterial(db, c, body.materialId)).extractedText;
+    let topic = body.topic;
+    if (!text && body.materialId) {
+      const m = await getMaterial(db, c, body.materialId);
+      text = m.extractedText;
+      topic ??= m.title.replace(/^(unit|lesson)\s*\d+\s*[—–:-]\s*/i, '').trim() || null;
+    }
     if (!text) throw badRequest('Add or review the source text first.');
     try {
-      return await ai.draftLesson({ sourceText: text, level: body.level, topic: body.topic, totalMinutes: body.totalMinutes ?? null, preferences: body.preferences });
+      return await ai.draftLesson({ sourceText: text, level: body.level, topic, totalMinutes: body.totalMinutes ?? null, preferences: body.preferences });
     } catch (e) {
       if (e instanceof AiUnavailableError) throw new HttpError(503, 'ai_unavailable', `${e.message} You can still build the lesson manually.`);
       throw e;

@@ -76,8 +76,8 @@ export async function readableLesson(db: Db, c: Ctx, id: string): Promise<Lesson
 
 async function checkMaterial(tx: Db | Tx, c: Ctx, materialId: string | null) {
   if (!materialId) return;
-  const [m] = await tx.select({ id: material.id }).from(material).where(and(eq(material.id, materialId), eq(material.academyId, c.academyId)));
-  if (!m) throw badRequest('The linked material does not exist in this academy.');
+  const [m] = await tx.select({ id: material.id }).from(material).where(and(eq(material.id, materialId), eq(material.academyId, c.academyId), eq(material.ownerId, c.userId)));
+  if (!m) throw badRequest('You can only link your own material to a lesson.');
 }
 
 async function writeActivities(tx: Tx, academyId: string, lessonId: string, acts: z.infer<typeof ActivityBody>[]) {

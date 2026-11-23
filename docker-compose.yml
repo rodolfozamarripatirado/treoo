@@ -1,0 +1,44 @@
+# Treoo demo stack. App, database and AI run as separate services; data lives in volumes.
+#   docker compose up -d --build                 # app + PostgreSQL, simulated AI
+#   docker compose --profile ai up -d --build     # also starts Ollama (set AI_MODE=ollama in .env)
+#   docker compose exec app node apps/api/dist/db/seed.js   # load fictitious demo data
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-treoo}
+      POSTGRES_USER: ${POSTGRES_USER:-treoo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build: .
+    image: treoo:latest
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-treoo}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-treoo}
+      AI_MODE: ${AI_MODE:-mock}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_TEXT_MODEL: ${OLLAMA_TEXT_MODEL:-qwen3:8b}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-qwen3-vl:4b-instruct}
+      COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+    ports: ["${APP_PORT:-3000}:3000"]
+    volumes: [uploads:/data]
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ai"]
+    volumes: [ollama:/root/.ollama]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  uploads:
+  ollama:

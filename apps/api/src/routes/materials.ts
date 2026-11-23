@@ -18,7 +18,8 @@ const view = (m: typeof material.$inferSelect) => ({
 export async function getMaterial(db: Db, c: Ctx, id: string, write = false) {
   const [m] = await db.select().from(material).where(and(eq(material.id, id), eq(material.academyId, c.academyId)));
   if (!m) throw notFound('Material');
-  if (c.role === 'student') throw notFound('Material');
+  // Students never see raw material; teachers only their own; admins can review all of their academy.
+  if (c.role === 'student' || (c.role === 'teacher' && m.ownerId !== c.userId)) throw notFound('Material');
   if (write && m.ownerId !== c.userId) throw forbidden('Only the teacher who uploaded this material can change it.');
   return m;
 }

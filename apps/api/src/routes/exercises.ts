@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { ctx } from '../auth/context.js';
@@ -99,7 +99,7 @@ export const exerciseRoutes: FastifyPluginAsync = async (app) => {
       const [s] = await db.select().from(classSession).where(and(eq(classSession.id, body.sessionId), eq(classSession.academyId, c.academyId), eq(classSession.groupId, body.groupId)));
       if (!s) throw badRequest('The class session does not belong to this group.');
     }
-    const exs = await db.select({ id: exercise.id }).from(exercise).where(and(eq(exercise.academyId, c.academyId), sql`${exercise.id} = any(${body.exerciseIds}::uuid[])`));
+    const exs = await db.select({ id: exercise.id }).from(exercise).where(and(eq(exercise.academyId, c.academyId), inArray(exercise.id, body.exerciseIds)));
     if (exs.length !== new Set(body.exerciseIds).size) throw badRequest('Some exercises do not exist in this academy.');
     const rows = await db.insert(assignment).values(exs.map((e) => ({ academyId: c.academyId, groupId: body.groupId, exerciseId: e.id, sessionId: body.sessionId ?? null, dueOn: body.dueOn ?? null }))).returning();
     return reply.status(201).send(rows);
