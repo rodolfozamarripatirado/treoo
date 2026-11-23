@@ -60,7 +60,16 @@ Si Ollama ya corre fuera de compose, apunta `OLLAMA_URL` a él y no actives el p
 
 - `manual`: IA desactivada. Todo el recorrido funciona a mano.
 - `mock`: respuestas **simuladas** y etiquetadas en la interfaz. Sirven para demostrar el flujo, no para medir calidad.
+- `openrouter`: inferencia real vía [OpenRouter](https://openrouter.ai). El modelo por defecto es `qwen/qwen3-vl-30b-a3b-instruct` para la foto y la lección, y se cambia con `OPENROUTER_TEXT_MODEL` / `OPENROUTER_VISION_MODEL`. Pide salidas con JSON Schema estricto: si el modelo no lo admite, reintenta pidiendo solo JSON y siempre valida la respuesta. Envía `data_collection: deny` para que los proveedores no guarden ni entrenen con los prompts. La clave vive solo en el servidor (`OPENROUTER_API_KEY` en `.env`).
 - `ollama`: inferencia real con `qwen3-vl:4b-instruct` (extracción desde foto) y `qwen3:8b` (propuesta de lección con JSON Schema). Si falla, la app avisa y sigue en modo manual.
+
+### Probar OpenRouter
+
+```bash
+# en .env: AI_MODE=openrouter y OPENROUTER_API_KEY=sk-or-...
+npm run ai:check -w apps/api          # comprueba la clave y el crédito; mide un borrador de lección y el vocabulario
+docker compose up -d                  # o reinicia la app para usarlo en la interfaz
+```
 
 ## Desarrollo local
 
@@ -70,7 +79,7 @@ npm install
 npm run db:migrate && npm run db:seed
 npm run dev -w apps/api      # API en :3000 (migra al arrancar)
 npm run dev -w apps/web      # Vite en :5173, con proxy a /api
-npm test                     # 31 tests de integración contra PostgreSQL real (base treoo_test)
+npm test                     # 36 tests de integración contra PostgreSQL real (base treoo_test)
 ```
 
 ## Arquitectura

@@ -42,7 +42,7 @@ export const VocabSuggestionSchema = z.object({
   })).max(20),
 });
 export type VocabSuggestion = z.infer<typeof VocabSuggestionSchema>['items'];
-export type AiOrigin = 'mock' | 'ollama';
+export type AiOrigin = 'mock' | 'ollama' | 'openrouter';
 
 export interface DraftRequest {
   sourceText: string;
@@ -100,7 +100,7 @@ const lessonJsonSchema = {
           type: { type: 'string', enum: ['single_choice', 'true_false', 'short_answer'] },
           prompt: { type: 'string' },
           options: { type: 'array', items: { type: 'string' } },
-          correctAnswer: {},
+          correctAnswer: { anyOf: [{ type: 'integer' }, { type: 'boolean' }, { type: 'string' }, { type: 'null' }] },
         },
       },
     },
@@ -121,6 +121,13 @@ function draftPrompt(r: DraftRequest): string {
     'SOURCE MATERIAL:',
     r.sourceText.slice(0, 12000),
   ].filter(Boolean).join('\n');
+}
+
+function vocabPrompt(r: { sourceText: string; level?: string | null; max?: number }): string {
+  return [
+    `Pick up to ${r.max ?? 10} key vocabulary items (words, collocations, phrasal verbs) a ${r.level ?? 'B1'} learner should learn from this material.`,
+    'For each give the part of speech, a short learner-friendly meaning in simple British English, and an example sentence from or close to the material.',
+    'Use only language that appears in the material.', '', 'MATERIAL:', r.sourceText.slice(0, 8000)].join('\n');
 }
 
 const EXTRACT_PROMPT =
@@ -186,10 +193,7 @@ export function createOllamaAdapter(env: Env, fetchImpl: typeof fetch = fetch): 
     async suggestVocab(r) {
       const content = await call({
         model: env.OLLAMA_TEXT_MODEL, stream: false, think: false, format: vocabJsonSchema, options: { temperature: 0.2 },
-        messages: [{ role: 'user', content: [
-          `Pick up to ${r.max ?? 10} key vocabulary items (words, collocations, phrasal verbs) a ${r.level ?? 'B1'} learner should learn from this material.`,
-          'For each give the part of speech, a short learner-friendly meaning in simple British English, and an example sentence from or close to the material.',
-          'Use only language that appears in the material.', '', 'MATERIAL:', r.sourceText.slice(0, 8000)].join('\n') }],
+        messages: [{ role: 'user', content: vocabPrompt(r) }],
       });
       let parsed: unknown;
       try { parsed = JSON.parse(content); } catch { throw new AiUnavailableError('The AI returned an invalid vocabulary list. Try again or add words manually.'); }
@@ -221,6 +225,104 @@ function sanitiseDraft(raw: unknown): unknown {
       if (e.type === 'true_false') return { ...e, options: null, correctAnswer: e.correctAnswer === true || e.correctAnswer === 'true' };
       return { ...e, type: 'short_answer', options: null, correctAnswer: e.correctAnswer == null ? null : String(e.correctAnswer) };
     }),
+  };
+}
+
+// ---------------- OpenRouter (OpenAI-compatible API) ----------------
+
+/** OpenAI-style strict JSON Schema: every object closed, every property required. */
+function strictSchema(schema: unknown): unknown {
+  if (!schema || typeof schema !== 'object') return schema;
+  const s = { ...(schema as Record<string, unknown>) };
+  if (s.type === 'object' && s.properties) {
+    const props = Object.fromEntries(Object.entries(s.properties as Record<string, unknown>).map(([k, v]) => [k, strictSchema(v)]));
+    return { ...s, properties: props, required: Object.keys(props), additionalProperties: false };
+  }
+  if (s.type === 'array' && s.items) return { ...s, items: strictSchema(s.items) };
+  return s;
+}
+
+/** Accepts plain JSON or JSON wrapped in a Markdown code fence. */
+function parseJsonLoose(text: string): unknown {
+  const t = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim();
+  return JSON.parse(t);
+}
+
+export function createOpenRouterAdapter(env: Env, fetchImpl: typeof fetch = fetch): AiAdapter {
+  const key = env.OPENROUTER_API_KEY?.trim();
+  const headers = () => ({
+    authorization: `Bearer ${key}`,
+    'content-type': 'application/json',
+    'x-title': 'Treoo',
+    ...(env.APP_URL ? { 'http-referer': env.APP_URL } : {}),
+  });
+  type Msg = { role: 'user'; content: string | ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[] };
+
+  const chat = async (model: string, messages: Msg[], schema?: { name: string; schema: unknown }): Promise<string> => {
+    if (!key) throw new AiUnavailableError('OpenRouter is selected but OPENROUTER_API_KEY is not set.');
+    const send = async (structured: boolean) => {
+      const body: Record<string, unknown> = {
+        model, messages, temperature: schema ? 0.3 : 0,
+        // Demo data only, but still: never let providers store or train on prompts.
+        provider: { data_collection: 'deny', ...(structured ? { require_parameters: true } : {}) },
+      };
+      if (structured && schema) body.response_format = { type: 'json_schema', json_schema: { name: schema.name, strict: true, schema: strictSchema(schema.schema) } };
+      if (!structured && schema) messages = [...messages.slice(0, -1), { role: 'user', content: `${typeof messages.at(-1)!.content === 'string' ? messages.at(-1)!.content : ''}\n\nReply with JSON only, matching this JSON Schema:\n${JSON.stringify(schema.schema)}` }];
+      if (!structured) body.messages = messages;
+      return fetchImpl(`${env.OPENROUTER_BASE_URL}/chat/completions`, { method: 'POST', headers: headers(), body: JSON.stringify(body), signal: AbortSignal.timeout(env.OLLAMA_TIMEOUT_MS) })
+        .catch((e: unknown) => { throw new AiUnavailableError(`OpenRouter unreachable: ${(e as Error).message}`); });
+    };
+    let res = await send(!!schema);
+    // No endpoint for this model supports structured outputs: fall back to a JSON-only instruction (still validated).
+    if (schema && res.status === 404) res = await send(false);
+    if (res.status === 401) throw new AiUnavailableError('OpenRouter rejected the API key.');
+    if (res.status === 402) throw new AiUnavailableError('The OpenRouter account has no credit left.');
+    if (res.status === 429) throw new AiUnavailableError('OpenRouter rate limit reached. Wait a minute and try again.');
+    if (!res.ok) throw new AiUnavailableError(`OpenRouter returned ${res.status}.`);
+    const json = (await res.json()) as { choices?: { message?: { content?: string } }[]; error?: { message?: string } };
+    if (json.error) throw new AiUnavailableError(`OpenRouter error: ${json.error.message ?? 'unknown'}`);
+    return json.choices?.[0]?.message?.content ?? '';
+  };
+
+  return {
+    mode: 'openrouter',
+    async status() {
+      const models = { text: env.OPENROUTER_TEXT_MODEL, vision: env.OPENROUTER_VISION_MODEL };
+      if (!key) return { mode: 'openrouter', available: false, detail: 'OPENROUTER_API_KEY is not set.', models };
+      try {
+        const res = await fetchImpl(`${env.OPENROUTER_BASE_URL}/key`, { headers: headers(), signal: AbortSignal.timeout(5000) });
+        if (res.status === 401) return { mode: 'openrouter', available: false, detail: 'OpenRouter rejected the API key.', models };
+        if (!res.ok) return { mode: 'openrouter', available: false, detail: `OpenRouter returned ${res.status}.`, models };
+        const k = ((await res.json()) as { data?: { limit_remaining?: number | null } }).data;
+        const credit = k?.limit_remaining == null ? '' : ` Credit left: $${k.limit_remaining.toFixed(2)}.`;
+        return { mode: 'openrouter', available: true, detail: `OpenRouter ready (${models.text}).${credit}`, models };
+      } catch (e) {
+        return { mode: 'openrouter', available: false, detail: `OpenRouter unreachable: ${(e as Error).message}`, models };
+      }
+    },
+    async extract(image) {
+      const text = await chat(env.OPENROUTER_VISION_MODEL, [{ role: 'user', content: [
+        { type: 'text', text: EXTRACT_PROMPT },
+        { type: 'image_url', image_url: { url: `data:${image.mime};base64,${image.base64}` } },
+      ] }]);
+      return { text: text.trim(), origin: 'openrouter' };
+    },
+    async draftLesson(r) {
+      const content = await chat(env.OPENROUTER_TEXT_MODEL, [{ role: 'user', content: draftPrompt(r) }], { name: 'lesson_draft', schema: lessonJsonSchema });
+      let parsed: unknown;
+      try { parsed = parseJsonLoose(content); } catch { throw new AiUnavailableError('The AI returned an invalid draft. Try again or continue manually.'); }
+      const result = LessonDraftSchema.safeParse(sanitiseDraft(parsed));
+      if (!result.success) throw new AiUnavailableError('The AI draft did not match the expected structure. Try again or continue manually.');
+      return { draft: result.data, origin: 'openrouter', model: env.OPENROUTER_TEXT_MODEL };
+    },
+    async suggestVocab(r) {
+      const content = await chat(env.OPENROUTER_TEXT_MODEL, [{ role: 'user', content: vocabPrompt(r) }], { name: 'vocabulary', schema: vocabJsonSchema });
+      let parsed: unknown;
+      try { parsed = parseJsonLoose(content); } catch { throw new AiUnavailableError('The AI returned an invalid vocabulary list. Try again or add words manually.'); }
+      const result = VocabSuggestionSchema.safeParse(parsed);
+      if (!result.success) throw new AiUnavailableError('The AI vocabulary list did not match the expected structure.');
+      return { items: result.data.items.filter((i) => i.term.trim()), origin: 'openrouter' };
+    },
   };
 }
 
@@ -302,6 +404,7 @@ export function createManualAdapter(): AiAdapter {
 
 export function createAiAdapter(env: Env): AiAdapter {
   if (env.AI_MODE === 'ollama') return createOllamaAdapter(env);
+  if (env.AI_MODE === 'openrouter') return createOpenRouterAdapter(env);
   if (env.AI_MODE === 'mock') return createMockAdapter();
   return createManualAdapter();
 }

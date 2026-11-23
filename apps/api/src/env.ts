@@ -12,10 +12,16 @@ const EnvSchema = z.object({
   COOKIE_SECURE: z.enum(['true', 'false', 'auto']).default('auto'),
   WEB_DIST: z.string().optional(),
   /** manual = no AI, mock = labelled simulated output, ollama = real inference */
-  AI_MODE: z.enum(['manual', 'mock', 'ollama']).default('mock'),
+  AI_MODE: z.enum(['manual', 'mock', 'ollama', 'openrouter']).default('mock'),
   OLLAMA_URL: z.string().url().default('http://localhost:11434'),
   OLLAMA_TEXT_MODEL: z.string().default('qwen3:8b'),
   OLLAMA_VISION_MODEL: z.string().default('qwen3-vl:4b-instruct'),
+  OPENROUTER_API_KEY: z.string().optional(),
+  OPENROUTER_BASE_URL: z.string().url().default('https://openrouter.ai/api/v1'),
+  OPENROUTER_TEXT_MODEL: z.string().default('qwen/qwen3-vl-30b-a3b-instruct'),
+  OPENROUTER_VISION_MODEL: z.string().default('qwen/qwen3-vl-30b-a3b-instruct'),
+  /** Public URL of the app, sent to OpenRouter as HTTP-Referer for attribution (optional). */
+  APP_URL: z.string().optional(),
   OLLAMA_TIMEOUT_MS: z.coerce.number().positive().default(180_000),
 });
 
