@@ -63,8 +63,10 @@ describe('curriculum and coverage', () => {
     const ana = await login('ana@northbridge.demo');
     expect((await app.inject({ method: 'POST', url: '/api/curriculum/units', payload: { level: 'B1+', title: 'x' }, ...ana })).statusCode).toBe(403);
     const cov = (await app.inject({ url: `/api/curriculum/coverage?groupId=${IDS.groupB1}`, ...ana })).json();
+    // The group follows published version 1 (8 topics); the unit added afterwards is not in it.
     expect(cov.taught).toBe(1);
-    expect(cov.total).toBe(9);
+    expect(cov.total).toBe(8);
+    expect(cov.plan.version).toBe(1);
     const alex = await login('alex@northbridge.demo');
     expect((await app.inject({ url: `/api/curriculum/coverage?groupId=${IDS.groupB1}`, ...alex })).statusCode).toBe(403);
     const bruno = await login('bruno@westport.demo');

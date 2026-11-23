@@ -19,8 +19,9 @@ export const progressRoutes: FastifyPluginAsync = async (app) => {
       select g.id, g.name, g.level, u.display_name as "teacherName", g.teacher_id as "teacherId", st.name as "siteName",
         (select count(*)::int from treoo.enrollment e where e.group_id = g.id) as students,
         (select count(*)::int from treoo.class_session s where s.group_id = g.id and s.status = 'delivered') as "classesDelivered",
-        (select round(100.0 * avg(case when a.status in ('present','late') then 1 else 0 end))::int
-           from treoo.attendance a join treoo.class_session s on s.id = a.session_id where s.group_id = g.id) as "attendanceRate",
+        -- (present + late) / (present + late + absent). Excused and untaken registers are not absences (A01 rule).
+        (select round(100.0 * count(*) filter (where a.status in ('present','late')) / nullif(count(*) filter (where a.status in ('present','late','absent')), 0))::int
+           from treoo.attendance a join treoo.class_session s on s.id = a.session_id where s.group_id = g.id and s.status <> 'cancelled') as "attendanceRate",
         (select round(100 * avg(x.score / x.points))::int from (
            select distinct on (t.assignment_id, t.student_id) coalesce(t.teacher_score, t.auto_score) as score, e.points
            from treoo.attempt t join treoo.assignment a on a.id = t.assignment_id join treoo.exercise e on e.id = a.exercise_id
@@ -47,7 +48,7 @@ export const progressRoutes: FastifyPluginAsync = async (app) => {
            from treoo.attempt t join treoo.assignment asg on asg.id = t.assignment_id join treoo.exercise e on e.id = asg.exercise_id
            where asg.group_id = ${groupId} and t.student_id = u.id order by t.assignment_id, t.created_at desc) x) as "avgScore"
       from treoo.enrollment en join treoo.app_user u on u.id = en.student_id
-      left join treoo.attendance a on a.student_id = u.id and a.session_id in (select id from treoo.class_session where group_id = ${groupId})
+      left join treoo.attendance a on a.student_id = u.id and a.session_id in (select id from treoo.class_session where group_id = ${groupId} and status <> 'cancelled')
       where en.group_id = ${groupId}
       group by u.id, u.display_name order by u.display_name`);
     const topics = await db.execute(sql`

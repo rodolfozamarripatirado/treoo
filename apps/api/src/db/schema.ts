@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   type AnyPgColumn,
+  time,
   boolean,
   check,
   date,
@@ -28,7 +29,7 @@ const updatedAt = () => timestamp('updated_at', { withTimezone: true }).notNull(
 export const roleEnum = treoo.enum('role', ['admin', 'teacher', 'student']);
 export const lessonStatusEnum = treoo.enum('lesson_status', ['draft', 'ready']);
 export const extractionStatusEnum = treoo.enum('extraction_status', ['none', 'manual', 'ai', 'mock', 'failed']);
-export const sessionStatusEnum = treoo.enum('class_session_status', ['planned', 'delivered']);
+export const sessionStatusEnum = treoo.enum('class_session_status', ['planned', 'delivered', 'cancelled']);
 export const attendanceStatusEnum = treoo.enum('attendance_status', ['present', 'absent', 'late', 'excused']);
 export const exerciseTypeEnum = treoo.enum('exercise_type', ['single_choice', 'true_false', 'short_answer', 'gap_fill']);
 
@@ -37,6 +38,8 @@ export const exerciseTypeEnum = treoo.enum('exercise_type', ['single_choice', 't
 export const academy = treoo.table('academy', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
+  /** IANA time zone. Class dates and times are local wall-clock times in this zone. */
+  timezone: text('timezone').notNull().default('Europe/Dublin'),
   createdAt: createdAt(),
 }, (t) => [check('academy_name_not_blank', sql`length(btrim(${t.name})) > 0`)]);
 
@@ -73,6 +76,7 @@ export const studentGroup = treoo.table('student_group', {
   schedule: text('schedule'),
   teacherId: uuid('teacher_id').references(() => appUser.id, { onDelete: 'set null' }),
   siteId: uuid('site_id').references((): AnyPgColumn => site.id, { onDelete: 'set null' }),
+  planId: uuid('plan_id').references((): AnyPgColumn => curriculumPlan.id, { onDelete: 'restrict' }),
   createdAt: createdAt(),
 }, (t) => [index('student_group_academy_idx').on(t.academyId)]);
 
@@ -160,8 +164,14 @@ export const classSession = treoo.table('class_session', {
   lessonId: uuid('lesson_id').references(() => lesson.id, { onDelete: 'set null' }),
   teacherId: uuid('teacher_id').notNull().references(() => appUser.id, { onDelete: 'restrict' }),
   scheduledOn: date('scheduled_on').notNull(),
+  startTime: time('start_time'),
+  endTime: time('end_time'),
+  roomId: uuid('room_id').references((): AnyPgColumn => room.id, { onDelete: 'set null' }),
   topic: text('topic'),
   status: sessionStatusEnum('status').notNull().default('planned'),
+  cancelledReason: text('cancelled_reason'),
+  /** Lesson content frozen at publication, so later edits never change what students already saw. */
+  publishedSnapshot: jsonb('published_snapshot').$type<PublishedSnapshot>(),
   sharedNotes: text('shared_notes'),
   privateNotes: text('private_notes'),
   boardKey: text('board_key'),
@@ -170,7 +180,18 @@ export const classSession = treoo.table('class_session', {
   deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   publishedAt: timestamp('published_at', { withTimezone: true }),
   createdAt: createdAt(),
-}, (t) => [index('class_session_group_date_idx').on(t.academyId, t.groupId, t.scheduledOn)]);
+}, (t) => [
+  index('class_session_group_date_idx').on(t.academyId, t.groupId, t.scheduledOn),
+  check('class_session_time_order', sql`${t.startTime} IS NULL OR ${t.endTime} IS NULL OR ${t.endTime} > ${t.startTime}`),
+]);
+
+export interface PublishedSnapshot {
+  lessonRevision: number;
+  title: string; topic: string | null; level: string | null; objective: string | null;
+  activities: { kind: string | null; title: string | null; instructions: string | null; durationMinutes: number | null }[];
+  vocab: { id: string; term: string; partOfSpeech: string | null; meaning: string | null; example: string | null }[];
+  frozenAt: string;
+}
 
 export const attendance = treoo.table('attendance', {
   academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
@@ -200,6 +221,8 @@ export const assignment = treoo.table('assignment', {
   exerciseId: uuid('exercise_id').notNull().references(() => exercise.id, { onDelete: 'cascade' }),
   sessionId: uuid('session_id').references(() => classSession.id, { onDelete: 'set null' }),
   dueOn: date('due_on'),
+  /** Optional local time on dueOn (academy time zone); end of day when empty. */
+  dueTime: time('due_time'),
   createdAt: createdAt(),
 }, (t) => [index('assignment_group_idx').on(t.academyId, t.groupId)]);
 
@@ -276,6 +299,7 @@ export const curriculumUnit = treoo.table('curriculum_unit', {
   position: integer('position').notNull(),
   title: text('title').notNull(),
   description: text('description'),
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
   createdAt: createdAt(),
 }, (t) => [index('curriculum_unit_level_idx').on(t.academyId, t.level, t.position)]);
 
@@ -287,7 +311,30 @@ export const curriculumTopic = treoo.table('curriculum_topic', {
   title: text('title').notNull(),
   objective: text('objective'),
   skill: text('skill'),
+  required: boolean('required').notNull().default(true),
+  /** Topics are archived, never deleted, so lessons, coverage and published plans keep their history. */
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
 }, (t) => [index('curriculum_topic_unit_idx').on(t.unitId, t.position)]);
+
+/** A published, immutable version of a level's curriculum: the set of required topics at that moment. */
+export const curriculumPlan = treoo.table('curriculum_plan', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
+  level: text('level').notNull(),
+  version: integer('version').notNull(),
+  notes: text('notes'),
+  publishedBy: uuid('published_by').notNull().references(() => appUser.id, { onDelete: 'restrict' }),
+  publishedAt: timestamp('published_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex('curriculum_plan_version_uq').on(t.academyId, t.level, t.version)]);
+
+export const curriculumPlanTopic = treoo.table('curriculum_plan_topic', {
+  planId: uuid('plan_id').notNull().references(() => curriculumPlan.id, { onDelete: 'cascade' }),
+  topicId: uuid('topic_id').notNull().references(() => curriculumTopic.id, { onDelete: 'restrict' }),
+  unitTitle: text('unit_title').notNull(),
+  topicTitle: text('topic_title').notNull(),
+  objective: text('objective'),
+  position: integer('position').notNull(),
+}, (t) => [primaryKey({ columns: [t.planId, t.topicId] })]);
 
 export const assessmentKindEnum = treoo.enum('assessment_kind', ['baseline', 'checkpoint', 'final', 'quiz']);
 export type SkillScores = Partial<Record<'reading' | 'listening' | 'speaking' | 'writing' | 'grammar', { score: number; max: number }>>;
@@ -342,3 +389,11 @@ export const studentGoal = treoo.table('student_goal', {
   doneAt: timestamp('done_at', { withTimezone: true }),
   createdAt: createdAt(),
 }, (t) => [index('student_goal_student_idx').on(t.academyId, t.studentId)]);
+
+export const room = treoo.table('room', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
+  siteId: uuid('site_id').notNull().references(() => site.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  capacity: integer('capacity'),
+}, (t) => [index('room_site_idx').on(t.academyId, t.siteId)]);

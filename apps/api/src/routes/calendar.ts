@@ -30,7 +30,7 @@ export const calendarRoutes: FastifyPluginAsync = async (app) => {
   app.get('/calendar', async (req) => {
     const c = ctx(req, 'admin', 'teacher');
     const { from, to } = parse(Range, req.query);
-    const classes = await db.select({ id: classSession.id, scheduledOn: classSession.scheduledOn, topic: classSession.topic, groupName: studentGroup.name, status: classSession.status })
+    const classes = await db.select({ id: classSession.id, scheduledOn: classSession.scheduledOn, startTime: classSession.startTime, endTime: classSession.endTime, topic: classSession.topic, groupName: studentGroup.name, status: classSession.status })
       .from(classSession).innerJoin(studentGroup, eq(studentGroup.id, classSession.groupId))
       .where(and(eq(classSession.academyId, c.academyId), gte(classSession.scheduledOn, from), lte(classSession.scheduledOn, to), c.role === 'teacher' ? eq(studentGroup.teacherId, c.userId) : undefined))
       .orderBy(asc(classSession.scheduledOn));
@@ -64,10 +64,10 @@ export const calendarRoutes: FastifyPluginAsync = async (app) => {
   app.get('/portal/calendar', async (req) => {
     const c = ctx(req, 'student');
     const { from, to } = parse(Range, req.query);
-    const classes = await db.select({ id: classSession.id, scheduledOn: classSession.scheduledOn, topic: classSession.topic, groupName: studentGroup.name, published: sql<boolean>`${classSession.publishedAt} is not null` })
+    const classes = await db.select({ id: classSession.id, scheduledOn: classSession.scheduledOn, startTime: classSession.startTime, endTime: classSession.endTime, status: classSession.status, cancelledReason: classSession.cancelledReason, topic: classSession.topic, groupName: studentGroup.name, published: sql<boolean>`${classSession.publishedAt} is not null` })
       .from(classSession).innerJoin(studentGroup, eq(studentGroup.id, classSession.groupId))
       .where(and(eq(classSession.academyId, c.academyId), inArray(classSession.groupId, myGroups(c.academyId, c.userId)), gte(classSession.scheduledOn, from), lte(classSession.scheduledOn, to)));
-    const due = (await db.select({ id: assignment.id, dueOn: assignment.dueOn, prompt: exercise.prompt, type: exercise.type }).from(assignment).innerJoin(exercise, eq(exercise.id, assignment.exerciseId))
+    const due = (await db.select({ id: assignment.id, dueOn: assignment.dueOn, dueTime: assignment.dueTime, prompt: exercise.prompt, type: exercise.type }).from(assignment).innerJoin(exercise, eq(exercise.id, assignment.exerciseId))
       .where(and(eq(assignment.academyId, c.academyId), inArray(assignment.groupId, myGroups(c.academyId, c.userId)), gte(assignment.dueOn, from), lte(assignment.dueOn, to))))
       .map(({ type, ...t }) => ({ ...t, prompt: type === 'gap_fill' ? maskPrompt(t.prompt) : t.prompt }));
     const mySites = db.select({ s: studentGroup.siteId }).from(studentGroup).where(inArray(studentGroup.id, myGroups(c.academyId, c.userId)));

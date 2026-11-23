@@ -5,6 +5,7 @@ import { hashPassword } from '../auth/password.js';
 import { loadEnv } from '../env.js';
 import { createDb, type Db } from './client.js';
 import * as s from './schema.js';
+import { buildSnapshot } from '../lib/schedule.js';
 
 /**
  * Fictitious demo data only (TD-00). Fixed UUIDs make the seed repeatable: it does nothing
@@ -60,6 +61,11 @@ export async function seed(db: Db): Promise<boolean> {
     await tx.insert(s.site).values([
       { id: id('80000000', 1), academyId: IDS.academyA, name: 'City Centre', address: '12 Example Street (demo)' },
       { id: id('80000000', 2), academyId: IDS.academyA, name: 'Riverside', address: '3 Sample Quay (demo)' },
+    ]);
+    await tx.insert(s.room).values([
+      { id: id('81000000', 1), academyId: IDS.academyA, siteId: id('80000000', 1), name: 'Room 1', capacity: 12 },
+      { id: id('81000000', 2), academyId: IDS.academyA, siteId: id('80000000', 1), name: 'Room 2', capacity: 10 },
+      { id: id('81000000', 3), academyId: IDS.academyA, siteId: id('80000000', 2), name: 'River Room', capacity: 14 },
     ]);
     await tx.insert(s.studentGroup).values([
       { id: IDS.groupB1, academyId: IDS.academyA, name: 'B1+ Grammar — Morning', level: 'B1+', schedule: 'Mon–Fri 09:00–11:00', teacherId: IDS.ana, siteId: id('80000000', 1) },
@@ -126,11 +132,12 @@ export async function seed(db: Db): Promise<boolean> {
       ['ride a horse', 'collocation', 'sit on a horse and control it as it moves', 'Have you ever ridden a horse?'],
     ].map(([term, partOfSpeech, meaning, example], position) => ({ academyId: IDS.academyA, lessonId: IDS.lesson, position, term: term!, partOfSpeech, meaning, example })));
     await tx.insert(s.classSession).values([
-      { id: IDS.pastSession, academyId: IDS.academyA, groupId: IDS.groupB1, lessonId: IDS.lesson, teacherId: IDS.ana, scheduledOn: day(-3), topic: 'Present Perfect', status: 'delivered', deliveredAt: new Date(), publishedAt: new Date(), shareMaterial: 1, sharedNotes: 'Remember: been TO a place. Homework: tasks below.', privateNotes: 'Tomás struggled with irregular participles — follow up.' },
-      { id: IDS.todaySession, academyId: IDS.academyA, groupId: IDS.groupB1, lessonId: IDS.lesson, teacherId: IDS.ana, scheduledOn: day(0), topic: 'Present Perfect' },
+      { id: IDS.pastSession, academyId: IDS.academyA, groupId: IDS.groupB1, lessonId: IDS.lesson, teacherId: IDS.ana, scheduledOn: day(-3), startTime: '09:00', endTime: '11:00', roomId: id('81000000', 1), topic: 'Present Perfect', status: 'delivered', deliveredAt: new Date(), publishedAt: new Date(), shareMaterial: 1, sharedNotes: 'Remember: been TO a place. Homework: tasks below.', privateNotes: 'Tomás struggled with irregular participles — follow up.' },
+      { id: IDS.todaySession, academyId: IDS.academyA, groupId: IDS.groupB1, lessonId: IDS.lesson, teacherId: IDS.ana, scheduledOn: day(0), startTime: '09:00', endTime: '11:00', roomId: id('81000000', 1), topic: 'Present Perfect' },
+      { academyId: IDS.academyA, groupId: IDS.groupB2, lessonId: null, teacherId: IDS.alex, scheduledOn: day(0), startTime: '11:00', endTime: '13:00', roomId: id('81000000', 1), topic: 'Conversation: travel' },
     ]);
     // An older class so the "needs attention" signal has something to show.
-    await tx.insert(s.classSession).values({ id: id('70000000', 3), academyId: IDS.academyA, groupId: IDS.groupB1, lessonId: IDS.lesson, teacherId: IDS.ana, scheduledOn: day(-6), topic: 'Present Perfect', status: 'delivered', deliveredAt: new Date(), publishedAt: null, sharedNotes: 'Intro to experiences.' });
+    await tx.insert(s.classSession).values({ id: id('70000000', 3), academyId: IDS.academyA, groupId: IDS.groupB1, lessonId: IDS.lesson, teacherId: IDS.ana, scheduledOn: day(-6), startTime: '09:00', endTime: '11:00', topic: 'Present Perfect', status: 'delivered', deliveredAt: new Date(), publishedAt: null, sharedNotes: 'Intro to experiences.' });
     await tx.insert(s.attendance).values([
       { academyId: IDS.academyA, sessionId: id('70000000', 3), studentId: IDS.sam, status: 'present' },
       { academyId: IDS.academyA, sessionId: id('70000000', 3), studentId: IDS.lucia, status: 'present' },
@@ -165,7 +172,16 @@ export async function seed(db: Db): Promise<boolean> {
       { academyId: IDS.academyA, assignmentId: asg[0]!.id, studentId: IDS.tomas, answer: 0, autoScore: 0 },
       { academyId: IDS.academyA, assignmentId: asg[2]!.id, studentId: IDS.tomas, answer: 'I have never ridden a horse. I have never seen snow.', autoScore: null },
     ]);
+    // Curriculum version 1 for B1+, assigned to the B1+ group.
+    const required = await tx.select({ t: s.curriculumTopic, unit: s.curriculumUnit.title }).from(s.curriculumTopic)
+      .innerJoin(s.curriculumUnit, eq(s.curriculumUnit.id, s.curriculumTopic.unitId)).where(eq(s.curriculumUnit.academyId, IDS.academyA));
+    const [plan] = await tx.insert(s.curriculumPlan).values({ academyId: IDS.academyA, level: 'B1+', version: 1, notes: 'First published version (demo).', publishedBy: IDS.admin }).returning();
+    await tx.insert(s.curriculumPlanTopic).values(required.map((r, i) => ({ planId: plan!.id, topicId: r.t.id, unitTitle: r.unit, topicTitle: r.t.title, objective: r.t.objective, position: i })));
+    await tx.update(s.studentGroup).set({ planId: plan!.id }).where(eq(s.studentGroup.id, IDS.groupB1));
   });
+  // Freeze what students saw for the class that was already published.
+  const snap = await buildSnapshot(db, IDS.academyA, IDS.lesson);
+  await db.update(s.classSession).set({ publishedSnapshot: snap }).where(eq(s.classSession.id, IDS.pastSession));
   return true;
 }
 

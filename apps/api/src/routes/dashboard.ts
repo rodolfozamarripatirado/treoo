@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import type { FastifyPluginAsync } from 'fastify';
 import { ctx } from '../auth/context.js';
+import { academyTimeZone, localToday } from '../lib/schedule.js';
 
 /**
  * The teacher's "Today" screen. Everything is scoped to the groups the teacher teaches
@@ -12,10 +13,11 @@ export const dashboardRoutes: FastifyPluginAsync = async (app) => {
   app.get('/', async (req) => {
     const c = ctx(req, 'admin', 'teacher');
     const mine = c.role === 'teacher' ? sql`and g.teacher_id = ${c.userId}` : sql``;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localToday(await academyTimeZone(db, c.academyId));
 
     const classes = await db.execute(sql`
-      select s.id, s.scheduled_on as "scheduledOn", s.status, s.published_at as "publishedAt", s.topic,
+      select s.id, s.scheduled_on as "scheduledOn", to_char(s.start_time, 'HH24:MI') as "startTime", to_char(s.end_time, 'HH24:MI') as "endTime",
+        s.status, s.cancelled_reason as "cancelledReason", s.published_at as "publishedAt", s.topic,
         g.id as "groupId", g.name as "groupName", g.schedule, l.id as "lessonId", l.title as "lessonTitle",
         (select count(*)::int from treoo.enrollment e where e.group_id = g.id) as students,
         (select count(*)::int from treoo.attendance a where a.session_id = s.id) as "attendanceTaken"
@@ -23,7 +25,7 @@ export const dashboardRoutes: FastifyPluginAsync = async (app) => {
       left join treoo.lesson l on l.id = s.lesson_id
       where s.academy_id = ${c.academyId} ${mine}
         and s.scheduled_on between ${today}::date and ${today}::date + 6
-      order by s.scheduled_on, g.name`);
+      order by s.scheduled_on, s.start_time nulls last, g.name`);
 
     const toPublish = await db.execute(sql`
       select s.id, s.scheduled_on as "scheduledOn", g.name as "groupName", s.topic
@@ -46,7 +48,7 @@ export const dashboardRoutes: FastifyPluginAsync = async (app) => {
           count(*) filter (where a.status = 'absent')::int as absences,
           count(*)::int as classes
         from treoo.attendance a join treoo.class_session s on s.id = a.session_id
-        where s.group_id in (select id from my_groups) and s.scheduled_on >= ${today}::date - 30
+        where s.group_id in (select id from my_groups) and s.status <> 'cancelled' and s.scheduled_on >= ${today}::date - 30
         group by a.student_id, s.group_id),
       latest as (
         select t.student_id, a.group_id, coalesce(t.teacher_score, t.auto_score) / e.points as ratio,

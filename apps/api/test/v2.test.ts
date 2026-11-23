@@ -39,7 +39,8 @@ describe('teacher Today screen', () => {
     expect(mei.reasons[0]).toContain('2 absences');
     const alex = await login('alex@northbridge.demo');
     const da = (await app.inject({ url: '/api/dashboard', ...alex })).json();
-    expect(da.classes).toHaveLength(0);
+    // Alex only sees his own B2 class today, and none of Ana's answers to mark.
+    expect(da.classes.map((c: { groupName: string }) => c.groupName)).toEqual(['B2 Conversation — Morning']);
     expect(da.toMark).toHaveLength(0);
     const sam = await login('sam@northbridge.demo');
     expect((await app.inject({ url: '/api/dashboard', ...sam })).statusCode).toBe(403);

@@ -117,7 +117,9 @@ export const lessonRoutes: FastifyPluginAsync = async (app) => {
     const c = ctx(req, 'admin', 'teacher');
     const { id } = parse(uuidParam, req.params);
     const l = await readableLesson(db, c, id);
-    const exs = await db.select().from(exercise).where(and(eq(exercise.lessonId, id), eq(exercise.academyId, c.academyId))).orderBy(asc(exercise.createdAt));
+    const exs = await db.select({ e: exercise, attempts: sql<number>`(select count(*)::int from treoo.attempt t join treoo.assignment a on a.id = t.assignment_id where a.exercise_id = "exercise"."id")` })
+      .from(exercise).where(and(eq(exercise.lessonId, id), eq(exercise.academyId, c.academyId))).orderBy(asc(exercise.createdAt))
+      .then((r) => r.map((x) => ({ ...x.e, attempts: x.attempts })));
     const vocab = await db.select({ id: vocabItem.id, term: vocabItem.term, partOfSpeech: vocabItem.partOfSpeech, meaning: vocabItem.meaning, example: vocabItem.example })
       .from(vocabItem).where(and(eq(vocabItem.lessonId, id), eq(vocabItem.academyId, c.academyId))).orderBy(asc(vocabItem.position));
     return { ...l, exercises: exs, vocab, canEdit: l.ownerId === c.userId };

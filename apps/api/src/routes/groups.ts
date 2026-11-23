@@ -21,7 +21,7 @@ export const groupRoutes: FastifyPluginAsync = async (app) => {
     const c = ctx(req);
     const base = db.select({
       id: studentGroup.id, name: studentGroup.name, level: studentGroup.level, schedule: studentGroup.schedule,
-      teacherId: studentGroup.teacherId, teacherName: appUser.displayName, siteId: studentGroup.siteId,
+      teacherId: studentGroup.teacherId, teacherName: appUser.displayName, siteId: studentGroup.siteId, planId: studentGroup.planId,
       studentCount: sql<number>`(select count(*)::int from treoo.enrollment e where e.group_id = ${studentGroup.id})`,
     }).from(studentGroup).leftJoin(appUser, eq(appUser.id, studentGroup.teacherId));
     if (c.role === 'student') {

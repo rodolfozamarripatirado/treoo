@@ -4,8 +4,9 @@ import { z } from 'zod';
 import { ctx } from '../auth/context.js';
 import { appUser, attendance, classSession, enrollment, exercise, studentGroup } from '../db/schema.js';
 import { getManagedGroup, isEnrolled } from '../lib/access.js';
-import { HttpError, badRequest, notFound } from '../lib/errors.js';
-import { isoDate, optText, parse, uuidParam } from '../lib/validate.js';
+import { HttpError, badRequest, conflict, notFound } from '../lib/errors.js';
+import { buildSnapshot, checkRoom, findClashes, hhmm } from '../lib/schedule.js';
+import { isoDate, optText, parse, reqText, uuidParam } from '../lib/validate.js';
 import { loadLesson, readableLesson } from './lessons.js';
 
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
@@ -25,6 +26,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return db.select({
       id: classSession.id, scheduledOn: classSession.scheduledOn, topic: classSession.topic, status: classSession.status,
       publishedAt: classSession.publishedAt, groupId: studentGroup.id, groupName: studentGroup.name, lessonId: classSession.lessonId,
+      startTime: classSession.startTime, endTime: classSession.endTime, cancelledReason: classSession.cancelledReason,
     }).from(classSession).innerJoin(studentGroup, eq(studentGroup.id, classSession.groupId))
       .where(and(
         eq(classSession.academyId, c.academyId),
@@ -32,19 +34,40 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         q.groupId ? eq(classSession.groupId, q.groupId) : undefined,
         q.from ? gte(classSession.scheduledOn, q.from) : undefined,
         q.to ? lte(classSession.scheduledOn, q.to) : undefined,
-      )).orderBy(desc(classSession.scheduledOn)).limit(300);
+      )).orderBy(desc(classSession.scheduledOn), asc(classSession.startTime)).limit(300);
   });
+
+  const Timing = {
+    startTime: hhmm.nullable().optional().transform((v) => v ?? null),
+    endTime: hhmm.nullable().optional().transform((v) => v ?? null),
+    roomId: z.string().uuid().nullable().optional().transform((v) => v ?? null),
+    /** The teacher saw the clash warning and chose to keep the time anyway. */
+    confirmClash: z.boolean().default(false),
+  };
+  const timingRules = (b: { startTime: string | null; endTime: string | null }) => {
+    if ((b.startTime === null) !== (b.endTime === null)) throw badRequest('Set both the start and the end time, or neither.');
+    if (b.startTime && b.endTime && b.endTime <= b.startTime) throw badRequest('The class must end after it starts.');
+  };
+  const guardClashes = async (academyId: string, s: Parameters<typeof findClashes>[2], confirmed: boolean) => {
+    const clashes = await findClashes(db, academyId, s);
+    if (clashes.length && !confirmed) throw new HttpError(409, 'schedule_clash', 'This time overlaps with another class.', { clashes });
+    return clashes;
+  };
 
   app.post('/', async (req, reply) => {
     const c = ctx(req, 'teacher', 'admin');
-    const body = parse(z.object({ groupId: z.string().uuid(), lessonId: z.string().uuid().nullable().optional(), scheduledOn: isoDate, topic: optText(200) }), req.body);
+    const body = parse(z.object({ groupId: z.string().uuid(), lessonId: z.string().uuid().nullable().optional(), scheduledOn: isoDate, topic: optText(200), ...Timing }), req.body);
+    timingRules(body);
     const g = await getManagedGroup(db, c, body.groupId);
+    if (!(await checkRoom(db, c.academyId, body.roomId))) throw badRequest('That room does not belong to this academy.');
     let topic = body.topic;
     if (body.lessonId) {
       const l = await readableLesson(db, c, body.lessonId);
       topic ??= l.topic ?? l.title;
     }
-    const [s] = await db.insert(classSession).values({ academyId: c.academyId, groupId: g.id, lessonId: body.lessonId ?? null, teacherId: g.teacherId ?? c.userId, scheduledOn: body.scheduledOn, topic }).returning();
+    const teacherId = g.teacherId ?? c.userId;
+    await guardClashes(c.academyId, { scheduledOn: body.scheduledOn, startTime: body.startTime, endTime: body.endTime, teacherId, roomId: body.roomId, groupId: g.id }, body.confirmClash);
+    const [s] = await db.insert(classSession).values({ academyId: c.academyId, groupId: g.id, lessonId: body.lessonId ?? null, teacherId, scheduledOn: body.scheduledOn, startTime: body.startTime, endTime: body.endTime, roomId: body.roomId, topic }).returning();
     return reply.status(201).send(s);
   });
 
@@ -64,16 +87,21 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
 
   app.put('/:id', async (req) => {
     const { id } = parse(uuidParam, req.params);
-    const { c } = await managed(req, id);
-    const body = parse(z.object({ scheduledOn: isoDate, topic: optText(200), lessonId: z.string().uuid().nullable().optional() }), req.body);
+    const { c, s } = await managed(req, id);
+    const body = parse(z.object({ scheduledOn: isoDate, topic: optText(200), lessonId: z.string().uuid().nullable().optional(), ...Timing }), req.body);
+    timingRules(body);
+    if (s.status === 'delivered' && (body.scheduledOn !== s.scheduledOn)) throw badRequest('A class that was already taught cannot be moved to another date.');
+    if (!(await checkRoom(db, c.academyId, body.roomId))) throw badRequest('That room does not belong to this academy.');
     if (body.lessonId) await readableLesson(db, c, body.lessonId);
-    const [u] = await db.update(classSession).set({ scheduledOn: body.scheduledOn, topic: body.topic, lessonId: body.lessonId ?? null }).where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId))).returning();
+    await guardClashes(c.academyId, { id, scheduledOn: body.scheduledOn, startTime: body.startTime, endTime: body.endTime, teacherId: s.teacherId, roomId: body.roomId, groupId: s.groupId }, body.confirmClash);
+    const [u] = await db.update(classSession).set({ scheduledOn: body.scheduledOn, topic: body.topic, lessonId: body.lessonId ?? null, startTime: body.startTime, endTime: body.endTime, roomId: body.roomId }).where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId))).returning();
     return u;
   });
 
   app.put('/:id/attendance', async (req) => {
     const { id } = parse(uuidParam, req.params);
     const { c, s } = await managed(req, id);
+    if (s.status === 'cancelled') throw badRequest('Attendance cannot be taken for a cancelled class.');
     const { records } = parse(z.object({ records: z.array(z.object({ studentId: z.string().uuid(), status: z.enum(['present', 'absent', 'late', 'excused']) })).max(200) }), req.body);
     const enrolled = records.length ? await db.select({ id: enrollment.studentId }).from(enrollment)
       .where(and(eq(enrollment.groupId, s.groupId), inArray(enrollment.studentId, records.map((r) => r.studentId)))) : [];
@@ -91,6 +119,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.post('/:id/deliver', { bodyLimit: 8 * 1024 * 1024 }, async (req) => {
     const { id } = parse(uuidParam, req.params);
     const { c, s } = await managed(req, id);
+    if (s.status === 'cancelled') throw badRequest('A cancelled class cannot be marked as taught. Reinstate it first.');
     const body = parse(z.object({ sharedNotes: optText(20_000), privateNotes: optText(20_000), board: z.string().max(7_500_000).nullable().optional(), shareBoard: z.boolean().default(false), shareMaterial: z.boolean().optional() }), req.body);
     let boardKey = s.boardKey;
     if (body.board) {
@@ -109,10 +138,39 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return { ...rest, hasBoard: !!boardKey };
   });
 
+  /**
+   * Publishing freezes the lesson content for students. Publishing again is the explicit way to
+   * update what students see after editing the lesson; nothing changes for them silently.
+   */
   app.post('/:id/publish', async (req) => {
     const { id } = parse(uuidParam, req.params);
-    const { c } = await managed(req, id);
-    const [u] = await db.update(classSession).set({ publishedAt: new Date() }).where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId))).returning({ publishedAt: classSession.publishedAt });
+    const { c, s } = await managed(req, id);
+    if (s.status === 'cancelled') throw badRequest('A cancelled class cannot be published.');
+    const snapshot = s.lessonId ? await buildSnapshot(db, c.academyId, s.lessonId) : null;
+    const [u] = await db.update(classSession).set({ publishedAt: s.publishedAt ?? new Date(), publishedSnapshot: snapshot })
+      .where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId)))
+      .returning({ publishedAt: classSession.publishedAt, publishedSnapshot: classSession.publishedSnapshot });
+    return u;
+  });
+
+  app.post('/:id/cancel', async (req) => {
+    const { id } = parse(uuidParam, req.params);
+    const { c, s } = await managed(req, id);
+    const { reason } = parse(z.object({ reason: reqText(300, 'Reason') }), req.body);
+    if (s.status === 'delivered') throw conflict('This class was already taught and cannot be cancelled.');
+    const [u] = await db.update(classSession).set({ status: 'cancelled', cancelledReason: reason, publishedAt: null })
+      .where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId))).returning();
+    return u;
+  });
+
+  app.post('/:id/reinstate', async (req) => {
+    const { id } = parse(uuidParam, req.params);
+    const { c, s } = await managed(req, id);
+    if (s.status !== 'cancelled') throw badRequest('Only a cancelled class can be reinstated.');
+    await guardClashes(c.academyId, { id, scheduledOn: s.scheduledOn, startTime: s.startTime, endTime: s.endTime, teacherId: s.teacherId, roomId: s.roomId, groupId: s.groupId },
+      parse(z.object({ confirmClash: z.boolean().default(false) }), req.body ?? {}).confirmClash);
+    const [u] = await db.update(classSession).set({ status: 'planned', cancelledReason: null })
+      .where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId))).returning();
     return u;
   });
 

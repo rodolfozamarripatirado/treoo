@@ -23,7 +23,8 @@ export const portalRoutes: FastifyPluginAsync = async (app) => {
       hasBoard: sql<boolean>`(${classSession.boardKey} is not null and ${classSession.shareBoard} = 1)`,
       publishedAt: classSession.publishedAt, groupId: studentGroup.id, groupName: studentGroup.name,
       lessonId: lesson.id, lessonTitle: lesson.title, lessonTopic: lesson.topic, objective: lesson.objective, level: lesson.level,
-      myAttendance: attendance.status,
+      myAttendance: attendance.status, snapshot: classSession.publishedSnapshot,
+      startTime: classSession.startTime, endTime: classSession.endTime,
     }).from(classSession)
       .innerJoin(studentGroup, eq(studentGroup.id, classSession.groupId))
       .leftJoin(lesson, eq(lesson.id, classSession.lessonId))
@@ -33,25 +34,30 @@ export const portalRoutes: FastifyPluginAsync = async (app) => {
         inArray(classSession.groupId, myGroups(db, c)),
         sessionId ? eq(classSession.id, sessionId) : undefined,
       )).orderBy(desc(classSession.scheduledOn));
-    return rows.map((r) => ({ ...r, topic: r.topic ?? r.lessonTopic ?? r.lessonTitle ?? 'General' }));
+    // Frozen content wins: what was published is what students keep seeing, even if the lesson changes later.
+    return rows.map(({ snapshot, ...r }) => {
+      const v = snapshot ? { ...r, lessonTitle: snapshot.title, lessonTopic: snapshot.topic, objective: snapshot.objective, level: snapshot.level } : r;
+      return { ...v, snapshot, topic: v.topic ?? v.lessonTopic ?? v.lessonTitle ?? 'General' };
+    });
   };
 
   app.get('/diary', async (req) => {
     const c = ctx(req, 'student');
-    return publishedSessions(c);
+    return (await publishedSessions(c)).map(({ snapshot: _s, ...r }) => r);
   });
 
   app.get('/sessions/:id', async (req) => {
     const c = ctx(req, 'student');
     const { id } = parse(uuidParam, req.params);
-    const [s] = await publishedSessions(c, id);
-    if (!s) throw notFound('Class');
-    const acts = s.lessonId ? await db.select({ title: activity.title, kind: activity.kind, instructions: activity.instructions, durationMinutes: activity.durationMinutes })
+    const [found] = await publishedSessions(c, id);
+    if (!found) throw notFound('Class');
+    const { snapshot, ...s } = found;
+    const acts = snapshot ? snapshot.activities : s.lessonId ? await db.select({ title: activity.title, kind: activity.kind, instructions: activity.instructions, durationMinutes: activity.durationMinutes })
       .from(activity).where(and(eq(activity.lessonId, s.lessonId), eq(activity.academyId, c.academyId))).orderBy(asc(activity.position)) : [];
     const tasks = (await db.select({ id: assignment.id, prompt: exercise.prompt, type: exercise.type, dueOn: assignment.dueOn }).from(assignment)
       .innerJoin(exercise, eq(exercise.id, assignment.exerciseId)).where(and(eq(assignment.sessionId, id), eq(assignment.academyId, c.academyId))))
       .map(({ type, ...t }) => ({ ...t, prompt: type === 'gap_fill' ? maskPrompt(t.prompt) : t.prompt }));
-    const vocab = s.lessonId ? await db.select({ id: vocabItem.id, term: vocabItem.term, partOfSpeech: vocabItem.partOfSpeech, meaning: vocabItem.meaning, example: vocabItem.example })
+    const vocab = snapshot ? snapshot.vocab : s.lessonId ? await db.select({ id: vocabItem.id, term: vocabItem.term, partOfSpeech: vocabItem.partOfSpeech, meaning: vocabItem.meaning, example: vocabItem.example })
       .from(vocabItem).where(and(eq(vocabItem.lessonId, s.lessonId), eq(vocabItem.academyId, c.academyId))).orderBy(asc(vocabItem.position)) : [];
     return { ...s, activities: acts, assignments: tasks, vocab };
   });
@@ -70,7 +76,7 @@ export const portalRoutes: FastifyPluginAsync = async (app) => {
     return rows.map(({ a, e, groupName, sessionDate }) => {
       const mine = attempts.filter((t) => t.assignmentId === a.id);
       return {
-        id: a.id, dueOn: a.dueOn, groupName, sessionDate, sessionId: a.sessionId,
+        id: a.id, dueOn: a.dueOn, dueTime: a.dueTime, groupName, sessionDate, sessionId: a.sessionId,
         exercise: { type: e.type, prompt: e.type === 'gap_fill' ? maskPrompt(e.prompt) : e.prompt, gaps: e.type === 'gap_fill' ? (e.correctAnswer as string[][]).length : undefined, options: e.options, points: e.points, topic: e.topic,
           // The answer key is revealed only after the student has attempted.
           correctAnswer: mine.length ? e.correctAnswer : undefined },

@@ -4,8 +4,9 @@ import { z } from 'zod';
 import { ctx } from '../auth/context.js';
 import { appUser, assignment, attempt, classSession, exercise, lesson } from '../db/schema.js';
 import { getManagedGroup } from '../lib/access.js';
-import { badRequest, forbidden, notFound } from '../lib/errors.js';
+import { HttpError, badRequest, forbidden, notFound } from '../lib/errors.js';
 import { isoDate, optText, parse, reqText, uuidParam } from '../lib/validate.js';
+import { hhmm } from '../lib/schedule.js';
 
 /** Gap fill: the prompt marks each gap as {{answer}} or {{answer|alternative}}. */
 export const GAP = /\{\{([^{}]{1,120})\}\}/g;
@@ -69,15 +70,21 @@ export const exerciseRoutes: FastifyPluginAsync = async (app) => {
     if (e.ownerId !== userId) throw forbidden('Only the teacher who wrote this exercise can change it.');
     return e;
   };
+  const attemptCount = sql<number>`(select count(*)::int from treoo.attempt t join treoo.assignment a on a.id = t.assignment_id where a.exercise_id = "exercise"."id")`;
+  /** Answers already given must keep meaning what they meant: an answered exercise is frozen. */
+  const assertNoAttempts = async (id: string) => {
+    const [r] = await db.select({ n: sql<number>`count(*)::int` }).from(attempt).innerJoin(assignment, eq(assignment.id, attempt.assignmentId)).where(eq(assignment.exerciseId, id));
+    if ((r?.n ?? 0) > 0) throw new HttpError(409, 'exercise_has_attempts', 'Students have already answered this exercise, so it can no longer be changed. Create a new version instead.');
+  };
 
   app.get('/exercises', async (req) => {
     const c = ctx(req, 'admin', 'teacher');
     const { lessonId } = parse(z.object({ lessonId: z.string().uuid().optional() }), req.query);
-    return db.select().from(exercise).where(and(
+    return db.select({ e: exercise, attempts: attemptCount }).from(exercise).where(and(
       eq(exercise.academyId, c.academyId),
       lessonId ? eq(exercise.lessonId, lessonId) : undefined,
       c.role === 'teacher' ? eq(exercise.ownerId, c.userId) : undefined,
-    )).orderBy(asc(exercise.createdAt));
+    )).orderBy(asc(exercise.createdAt)).then((r) => r.map((x) => ({ ...x.e, attempts: x.attempts })));
   });
 
   app.post('/exercises', async (req, reply) => {
@@ -95,6 +102,7 @@ export const exerciseRoutes: FastifyPluginAsync = async (app) => {
     const c = ctx(req, 'teacher', 'admin');
     const { id } = parse(uuidParam, req.params);
     await ownExercise(c.academyId, c.userId, id);
+    await assertNoAttempts(id);
     const body = parse(ExerciseBody, req.body);
     const [e] = await db.update(exercise).set(normaliseExercise(body)).where(and(eq(exercise.id, id), eq(exercise.academyId, c.academyId))).returning();
     return e;
@@ -104,15 +112,27 @@ export const exerciseRoutes: FastifyPluginAsync = async (app) => {
     const c = ctx(req, 'teacher', 'admin');
     const { id } = parse(uuidParam, req.params);
     await ownExercise(c.academyId, c.userId, id);
+    await assertNoAttempts(id);
     await db.delete(exercise).where(and(eq(exercise.id, id), eq(exercise.academyId, c.academyId)));
     return { ok: true };
+  });
+
+  /** New editable copy of an answered exercise. Existing assignments and answers stay on the original. */
+  app.post('/exercises/:id/new-version', async (req, reply) => {
+    const c = ctx(req, 'teacher', 'admin');
+    const { id } = parse(uuidParam, req.params);
+    const e = await ownExercise(c.academyId, c.userId, id);
+    const body = parse(ExerciseBody, req.body ?? {});
+    const [n] = await db.insert(exercise).values({ ...normaliseExercise(body), academyId: c.academyId, ownerId: c.userId, lessonId: e.lessonId }).returning();
+    return reply.status(201).send({ ...n, attempts: 0, replaces: e.id });
   });
 
   // ---------- Assignments & review ----------
 
   app.post('/assignments', async (req, reply) => {
     const c = ctx(req, 'teacher', 'admin');
-    const body = parse(z.object({ groupId: z.string().uuid(), exerciseIds: z.array(z.string().uuid()).min(1).max(20), sessionId: z.string().uuid().nullable().optional(), dueOn: isoDate.nullable().optional() }), req.body);
+    const body = parse(z.object({ groupId: z.string().uuid(), exerciseIds: z.array(z.string().uuid()).min(1).max(20), sessionId: z.string().uuid().nullable().optional(), dueOn: isoDate.nullable().optional(), dueTime: hhmm.nullable().optional() }), req.body);
+    if (body.dueTime && !body.dueOn) throw badRequest('Set a due date before a due time.');
     await getManagedGroup(db, c, body.groupId);
     if (body.sessionId) {
       const [s] = await db.select().from(classSession).where(and(eq(classSession.id, body.sessionId), eq(classSession.academyId, c.academyId), eq(classSession.groupId, body.groupId)));
@@ -120,7 +140,7 @@ export const exerciseRoutes: FastifyPluginAsync = async (app) => {
     }
     const exs = await db.select({ id: exercise.id }).from(exercise).where(and(eq(exercise.academyId, c.academyId), inArray(exercise.id, body.exerciseIds)));
     if (exs.length !== new Set(body.exerciseIds).size) throw badRequest('Some exercises do not exist in this academy.');
-    const rows = await db.insert(assignment).values(exs.map((e) => ({ academyId: c.academyId, groupId: body.groupId, exerciseId: e.id, sessionId: body.sessionId ?? null, dueOn: body.dueOn ?? null }))).returning();
+    const rows = await db.insert(assignment).values(exs.map((e) => ({ academyId: c.academyId, groupId: body.groupId, exerciseId: e.id, sessionId: body.sessionId ?? null, dueOn: body.dueOn ?? null, dueTime: body.dueTime ?? null }))).returning();
     return reply.status(201).send(rows);
   });
 
