@@ -3,7 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { ctx, type Ctx } from '../auth/context.js';
 import type { Db } from '../db/client.js';
-import { activity, assignment, attempt, attendance, classSession, enrollment, exercise, lesson, material, studentGroup, vocabItem } from '../db/schema.js';
+import { assignment, attempt, attendance, classSession, enrollment, exercise, studentGroup } from '../db/schema.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { parse, uuidParam } from '../lib/validate.js';
 import { autoScore, maskPrompt } from './exercises.js';
@@ -22,12 +22,11 @@ export const portalRoutes: FastifyPluginAsync = async (app) => {
       id: classSession.id, scheduledOn: classSession.scheduledOn, topic: classSession.topic, sharedNotes: classSession.sharedNotes,
       hasBoard: sql<boolean>`(${classSession.boardKey} is not null and ${classSession.shareBoard} = 1)`,
       publishedAt: classSession.publishedAt, groupId: studentGroup.id, groupName: studentGroup.name,
-      lessonId: lesson.id, lessonTitle: lesson.title, lessonTopic: lesson.topic, objective: lesson.objective, level: lesson.level,
+      lessonId: classSession.lessonId,
       myAttendance: attendance.status, snapshot: classSession.publishedSnapshot,
       startTime: classSession.startTime, endTime: classSession.endTime,
     }).from(classSession)
       .innerJoin(studentGroup, eq(studentGroup.id, classSession.groupId))
-      .leftJoin(lesson, eq(lesson.id, classSession.lessonId))
       .leftJoin(attendance, and(eq(attendance.sessionId, classSession.id), eq(attendance.studentId, c.userId)))
       .where(and(
         eq(classSession.academyId, c.academyId), isNotNull(classSession.publishedAt),
@@ -36,7 +35,9 @@ export const portalRoutes: FastifyPluginAsync = async (app) => {
       )).orderBy(desc(classSession.scheduledOn));
     // Frozen content wins: what was published is what students keep seeing, even if the lesson changes later.
     return rows.map(({ snapshot, ...r }) => {
-      const v = snapshot ? { ...r, lessonTitle: snapshot.title, lessonTopic: snapshot.topic, objective: snapshot.objective, level: snapshot.level } : r;
+      // Legacy publications without a snapshot require an explicit teacher republication.
+      const v = { ...r, lessonTitle: snapshot?.title ?? null, lessonTopic: snapshot?.topic ?? null,
+        objective: snapshot?.objective ?? null, level: snapshot?.level ?? null };
       return { ...v, snapshot, topic: v.topic ?? v.lessonTopic ?? v.lessonTitle ?? 'General' };
     });
   };
@@ -52,13 +53,11 @@ export const portalRoutes: FastifyPluginAsync = async (app) => {
     const [found] = await publishedSessions(c, id);
     if (!found) throw notFound('Class');
     const { snapshot, ...s } = found;
-    const acts = snapshot ? snapshot.activities : s.lessonId ? await db.select({ title: activity.title, kind: activity.kind, instructions: activity.instructions, durationMinutes: activity.durationMinutes })
-      .from(activity).where(and(eq(activity.lessonId, s.lessonId), eq(activity.academyId, c.academyId))).orderBy(asc(activity.position)) : [];
+    const acts = snapshot?.activities ?? [];
     const tasks = (await db.select({ id: assignment.id, prompt: exercise.prompt, type: exercise.type, dueOn: assignment.dueOn }).from(assignment)
       .innerJoin(exercise, eq(exercise.id, assignment.exerciseId)).where(and(eq(assignment.sessionId, id), eq(assignment.academyId, c.academyId))))
       .map(({ type, ...t }) => ({ ...t, prompt: type === 'gap_fill' ? maskPrompt(t.prompt) : t.prompt }));
-    const vocab = snapshot ? snapshot.vocab : s.lessonId ? await db.select({ id: vocabItem.id, term: vocabItem.term, partOfSpeech: vocabItem.partOfSpeech, meaning: vocabItem.meaning, example: vocabItem.example })
-      .from(vocabItem).where(and(eq(vocabItem.lessonId, s.lessonId), eq(vocabItem.academyId, c.academyId))).orderBy(asc(vocabItem.position)) : [];
+    const vocab = snapshot?.vocab ?? [];
     return { ...s, activities: acts, assignments: tasks, vocab };
   });
 
@@ -111,16 +110,19 @@ export const portalRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /** Knowledge Library: material the teacher chose to share with a published class. */
-  const sharedMaterials = (c: Ctx, materialId?: string) => db.select({
-    id: material.id, title: material.title, source: material.source, text: material.extractedText, hasOriginal: sql<boolean>`${material.storageKey} is not null`,
-    sessionId: classSession.id, scheduledOn: classSession.scheduledOn, topic: classSession.topic, groupName: studentGroup.name, storageKey: material.storageKey, mimeType: material.mimeType,
-  }).from(classSession)
-    .innerJoin(lesson, eq(lesson.id, classSession.lessonId))
-    .innerJoin(material, eq(material.id, lesson.materialId))
-    .innerJoin(studentGroup, eq(studentGroup.id, classSession.groupId))
-    .where(and(eq(classSession.academyId, c.academyId), isNotNull(classSession.publishedAt), eq(classSession.shareMaterial, 1),
-      inArray(classSession.groupId, myGroups(db, c)), materialId ? eq(material.id, materialId) : undefined))
-    .orderBy(desc(classSession.scheduledOn));
+  const sharedMaterials = async (c: Ctx, materialId?: string) => {
+    const rows = await db.select({
+      snapshot: classSession.publishedSnapshot, sessionId: classSession.id, scheduledOn: classSession.scheduledOn,
+      topic: classSession.topic, groupName: studentGroup.name,
+    }).from(classSession).innerJoin(studentGroup, eq(studentGroup.id, classSession.groupId))
+      .where(and(eq(classSession.academyId, c.academyId), isNotNull(classSession.publishedAt), eq(classSession.shareMaterial, 1),
+        inArray(classSession.groupId, myGroups(db, c)))).orderBy(desc(classSession.scheduledOn));
+    return rows.flatMap(({ snapshot, ...r }) => {
+      const m = snapshot?.material;
+      if (!m || (materialId && m.id !== materialId)) return [];
+      return [{ ...r, ...m, hasOriginal: !!m.storageKey }];
+    });
+  };
 
   app.get('/library', async (req) => {
     const c = ctx(req, 'student');
@@ -134,7 +136,7 @@ export const portalRoutes: FastifyPluginAsync = async (app) => {
     const { id } = parse(uuidParam, req.params);
     const [m] = await sharedMaterials(c, id);
     if (!m?.storageKey || !m.mimeType) throw notFound('Material');
-    reply.header('content-type', m.mimeType).header('cache-control', 'private, max-age=300').header('content-security-policy', "default-src 'none'; sandbox");
+    reply.header('content-type', m.mimeType).header('cache-control', 'private, no-store').header('content-security-policy', "default-src 'none'; sandbox");
     return reply.send(app.svc.storage.stream(m.storageKey));
   });
 

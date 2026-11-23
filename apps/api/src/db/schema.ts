@@ -190,6 +190,8 @@ export interface PublishedSnapshot {
   title: string; topic: string | null; level: string | null; objective: string | null;
   activities: { kind: string | null; title: string | null; instructions: string | null; durationMinutes: number | null }[];
   vocab: { id: string; term: string; partOfSpeech: string | null; meaning: string | null; example: string | null }[];
+  /** Optional only for legacy snapshots; missing material must never fall back to the live lesson. */
+  material?: { id: string; title: string | null; source: string | null; text: string | null; storageKey: string | null; mimeType: string | null } | null;
   frozenAt: string;
 }
 

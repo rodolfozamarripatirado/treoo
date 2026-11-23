@@ -1,7 +1,7 @@
 import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
-import { academy, activity, classSession, lesson, room, studentGroup, vocabItem, type PublishedSnapshot } from '../db/schema.js';
+import { academy, activity, classSession, lesson, material, room, studentGroup, vocabItem, type PublishedSnapshot } from '../db/schema.js';
 
 /** Local wall-clock time "HH:MM" (24 h). Combined with the date and the academy time zone. */
 export const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use the 24-hour format HH:MM.');
@@ -51,12 +51,17 @@ export async function checkRoom(db: Db, academyId: string, roomId: string | null
 }
 
 /** Freezes what students will see for a published class. */
-export async function buildSnapshot(db: Db, academyId: string, lessonId: string): Promise<PublishedSnapshot | null> {
+export async function buildSnapshot(db: Pick<Db, 'select'>, academyId: string, lessonId: string): Promise<PublishedSnapshot | null> {
   const [l] = await db.select().from(lesson).where(and(eq(lesson.id, lessonId), eq(lesson.academyId, academyId)));
   if (!l) return null;
   const acts = await db.select({ kind: activity.kind, title: activity.title, instructions: activity.instructions, durationMinutes: activity.durationMinutes })
     .from(activity).where(and(eq(activity.lessonId, lessonId), eq(activity.academyId, academyId))).orderBy(asc(activity.position));
   const vocab = await db.select({ id: vocabItem.id, term: vocabItem.term, partOfSpeech: vocabItem.partOfSpeech, meaning: vocabItem.meaning, example: vocabItem.example })
     .from(vocabItem).where(and(eq(vocabItem.lessonId, lessonId), eq(vocabItem.academyId, academyId))).orderBy(asc(vocabItem.position));
-  return { lessonRevision: l.revision, title: l.title, topic: l.topic, level: l.level, objective: l.objective, activities: acts, vocab, frozenAt: new Date().toISOString() };
+  const [original] = l.materialId ? await db.select({
+    id: material.id, title: material.title, source: material.source, text: material.extractedText,
+    storageKey: material.storageKey, mimeType: material.mimeType,
+  }).from(material).where(and(eq(material.id, l.materialId), eq(material.academyId, academyId))) : [];
+  return { lessonRevision: l.revision, title: l.title, topic: l.topic, level: l.level, objective: l.objective,
+    activities: acts, vocab, material: original ?? null, frozenAt: new Date().toISOString() };
 }
