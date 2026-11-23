@@ -1,0 +1,171 @@
+import { and, asc, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import type { FastifyPluginAsync } from 'fastify';
+import { z } from 'zod';
+import { ctx, type Ctx } from '../auth/context.js';
+import type { Db } from '../db/client.js';
+import { activity, assignment, attempt, attendance, classSession, enrollment, exercise, lesson, material, studentGroup, vocabItem } from '../db/schema.js';
+import { badRequest, notFound } from '../lib/errors.js';
+import { parse, uuidParam } from '../lib/validate.js';
+import { autoScore, maskPrompt } from './exercises.js';
+
+const MAX_ATTEMPTS = 3;
+
+const myGroups = (db: Db, c: Ctx) =>
+  db.select({ g: enrollment.groupId }).from(enrollment).where(and(eq(enrollment.academyId, c.academyId), eq(enrollment.studentId, c.userId)));
+
+/** Student-facing views: only published content of the student's own groups; never private notes or other students' data. */
+export const portalRoutes: FastifyPluginAsync = async (app) => {
+  const { db } = app.svc;
+
+  const publishedSessions = async (c: Ctx, sessionId?: string) => {
+    const rows = await db.select({
+      id: classSession.id, scheduledOn: classSession.scheduledOn, topic: classSession.topic, sharedNotes: classSession.sharedNotes,
+      hasBoard: sql<boolean>`(${classSession.boardKey} is not null and ${classSession.shareBoard} = 1)`,
+      publishedAt: classSession.publishedAt, groupId: studentGroup.id, groupName: studentGroup.name,
+      lessonId: lesson.id, lessonTitle: lesson.title, lessonTopic: lesson.topic, objective: lesson.objective, level: lesson.level,
+      myAttendance: attendance.status, snapshot: classSession.publishedSnapshot,
+      startTime: classSession.startTime, endTime: classSession.endTime,
+    }).from(classSession)
+      .innerJoin(studentGroup, eq(studentGroup.id, classSession.groupId))
+      .leftJoin(lesson, eq(lesson.id, classSession.lessonId))
+      .leftJoin(attendance, and(eq(attendance.sessionId, classSession.id), eq(attendance.studentId, c.userId)))
+      .where(and(
+        eq(classSession.academyId, c.academyId), isNotNull(classSession.publishedAt),
+        inArray(classSession.groupId, myGroups(db, c)),
+        sessionId ? eq(classSession.id, sessionId) : undefined,
+      )).orderBy(desc(classSession.scheduledOn));
+    // Frozen content wins: what was published is what students keep seeing, even if the lesson changes later.
+    return rows.map(({ snapshot, ...r }) => {
+      const v = snapshot ? { ...r, lessonTitle: snapshot.title, lessonTopic: snapshot.topic, objective: snapshot.objective, level: snapshot.level } : r;
+      return { ...v, snapshot, topic: v.topic ?? v.lessonTopic ?? v.lessonTitle ?? 'General' };
+    });
+  };
+
+  app.get('/diary', async (req) => {
+    const c = ctx(req, 'student');
+    return (await publishedSessions(c)).map(({ snapshot: _s, ...r }) => r);
+  });
+
+  app.get('/sessions/:id', async (req) => {
+    const c = ctx(req, 'student');
+    const { id } = parse(uuidParam, req.params);
+    const [found] = await publishedSessions(c, id);
+    if (!found) throw notFound('Class');
+    const { snapshot, ...s } = found;
+    const acts = snapshot ? snapshot.activities : s.lessonId ? await db.select({ title: activity.title, kind: activity.kind, instructions: activity.instructions, durationMinutes: activity.durationMinutes })
+      .from(activity).where(and(eq(activity.lessonId, s.lessonId), eq(activity.academyId, c.academyId))).orderBy(asc(activity.position)) : [];
+    const tasks = (await db.select({ id: assignment.id, prompt: exercise.prompt, type: exercise.type, dueOn: assignment.dueOn }).from(assignment)
+      .innerJoin(exercise, eq(exercise.id, assignment.exerciseId)).where(and(eq(assignment.sessionId, id), eq(assignment.academyId, c.academyId))))
+      .map(({ type, ...t }) => ({ ...t, prompt: type === 'gap_fill' ? maskPrompt(t.prompt) : t.prompt }));
+    const vocab = snapshot ? snapshot.vocab : s.lessonId ? await db.select({ id: vocabItem.id, term: vocabItem.term, partOfSpeech: vocabItem.partOfSpeech, meaning: vocabItem.meaning, example: vocabItem.example })
+      .from(vocabItem).where(and(eq(vocabItem.lessonId, s.lessonId), eq(vocabItem.academyId, c.academyId))).orderBy(asc(vocabItem.position)) : [];
+    return { ...s, activities: acts, assignments: tasks, vocab };
+  });
+
+  app.get('/assignments', async (req) => {
+    const c = ctx(req, 'student');
+    const rows = await db.select({ a: assignment, e: exercise, groupName: studentGroup.name, sessionDate: classSession.scheduledOn }).from(assignment)
+      .innerJoin(exercise, eq(exercise.id, assignment.exerciseId))
+      .innerJoin(studentGroup, eq(studentGroup.id, assignment.groupId))
+      .leftJoin(classSession, eq(classSession.id, assignment.sessionId))
+      .where(and(eq(assignment.academyId, c.academyId), inArray(assignment.groupId, myGroups(db, c))))
+      .orderBy(asc(assignment.dueOn), desc(assignment.createdAt));
+    const attempts = rows.length ? await db.select().from(attempt)
+      .where(and(eq(attempt.academyId, c.academyId), eq(attempt.studentId, c.userId), inArray(attempt.assignmentId, rows.map((r) => r.a.id))))
+      .orderBy(desc(attempt.createdAt)) : [];
+    return rows.map(({ a, e, groupName, sessionDate }) => {
+      const mine = attempts.filter((t) => t.assignmentId === a.id);
+      return {
+        id: a.id, dueOn: a.dueOn, dueTime: a.dueTime, groupName, sessionDate, sessionId: a.sessionId,
+        exercise: { type: e.type, prompt: e.type === 'gap_fill' ? maskPrompt(e.prompt) : e.prompt, gaps: e.type === 'gap_fill' ? (e.correctAnswer as string[][]).length : undefined, options: e.options, points: e.points, topic: e.topic,
+          // The answer key is revealed only after the student has attempted.
+          correctAnswer: mine.length ? e.correctAnswer : undefined },
+        attempts: mine.map(({ academyId: _a, ...t }) => t),
+        attemptsLeft: Math.max(0, MAX_ATTEMPTS - mine.length),
+      };
+    });
+  });
+
+  app.post('/assignments/:id/attempts', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
+    const c = ctx(req, 'student');
+    const { id } = parse(uuidParam, req.params);
+    const [row] = await db.select({ a: assignment, e: exercise }).from(assignment).innerJoin(exercise, eq(exercise.id, assignment.exerciseId))
+      .where(and(eq(assignment.id, id), eq(assignment.academyId, c.academyId), inArray(assignment.groupId, myGroups(db, c))));
+    if (!row) throw notFound('Assignment');
+    const gaps = row.e.type === 'gap_fill' ? (row.e.correctAnswer as string[][]).length : 0;
+    const schema = row.e.type === 'single_choice' ? z.number().int().min(0).max((row.e.options?.length ?? 1) - 1)
+      : row.e.type === 'true_false' ? z.boolean()
+      : row.e.type === 'gap_fill' ? z.array(z.string().trim().max(200)).length(gaps, `Fill in all ${gaps} gaps.`)
+      : z.string().trim().min(1, 'Write your answer.').max(5000);
+    const { answer } = parse(z.object({ answer: schema }), req.body);
+    const created = await db.transaction(async (tx) => {
+      // Serialise attempts per student+assignment so the limit cannot be bypassed by parallel requests.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`${c.userId}:${id}`}))`);
+      const [{ n }] = (await tx.select({ n: sql<number>`count(*)::int` }).from(attempt).where(and(eq(attempt.assignmentId, id), eq(attempt.studentId, c.userId)))) as [{ n: number }];
+      if (n >= MAX_ATTEMPTS) throw badRequest(`You have used all ${MAX_ATTEMPTS} attempts for this task.`);
+      const [t] = await tx.insert(attempt).values({ academyId: c.academyId, assignmentId: id, studentId: c.userId, answer, autoScore: autoScore(row.e, answer) }).returning();
+      return t!;
+    });
+    const { academyId: _a, ...t } = created;
+    return reply.status(201).send({ ...t, points: row.e.points, correctAnswer: row.e.correctAnswer });
+  });
+
+  /** Knowledge Library: material the teacher chose to share with a published class. */
+  const sharedMaterials = (c: Ctx, materialId?: string) => db.select({
+    id: material.id, title: material.title, source: material.source, text: material.extractedText, hasOriginal: sql<boolean>`${material.storageKey} is not null`,
+    sessionId: classSession.id, scheduledOn: classSession.scheduledOn, topic: classSession.topic, groupName: studentGroup.name, storageKey: material.storageKey, mimeType: material.mimeType,
+  }).from(classSession)
+    .innerJoin(lesson, eq(lesson.id, classSession.lessonId))
+    .innerJoin(material, eq(material.id, lesson.materialId))
+    .innerJoin(studentGroup, eq(studentGroup.id, classSession.groupId))
+    .where(and(eq(classSession.academyId, c.academyId), isNotNull(classSession.publishedAt), eq(classSession.shareMaterial, 1),
+      inArray(classSession.groupId, myGroups(db, c)), materialId ? eq(material.id, materialId) : undefined))
+    .orderBy(desc(classSession.scheduledOn));
+
+  app.get('/library', async (req) => {
+    const c = ctx(req, 'student');
+    const rows = await sharedMaterials(c);
+    const seen = new Set<string>();
+    return rows.filter((r) => !seen.has(r.id) && seen.add(r.id)).map(({ storageKey: _k, mimeType: _m, ...r }) => r);
+  });
+
+  app.get('/materials/:id/original', async (req, reply) => {
+    const c = ctx(req, 'student');
+    const { id } = parse(uuidParam, req.params);
+    const [m] = await sharedMaterials(c, id);
+    if (!m?.storageKey || !m.mimeType) throw notFound('Material');
+    reply.header('content-type', m.mimeType).header('cache-control', 'private, max-age=300').header('content-security-policy', "default-src 'none'; sandbox");
+    return reply.send(app.svc.storage.stream(m.storageKey));
+  });
+
+  /** Review Centre: tasks where my latest answer was not fully right, with the key and feedback to practise again. */
+  app.get('/review', async (req) => {
+    const c = ctx(req, 'student');
+    const rows = await db.execute<{ assignmentId: string; type: string; prompt: string; options: string[] | null; correctAnswer: unknown; points: number; topic: string | null; answer: unknown; score: number; feedback: string | null; createdAt: string }>(sql`
+      with latest as (
+        select t.*, row_number() over (partition by t.assignment_id order by t.created_at desc) as rn
+        from treoo.attempt t where t.academy_id = ${c.academyId} and t.student_id = ${c.userId})
+      select a.id as "assignmentId", e.type, e.prompt, e.options, e.correct_answer as "correctAnswer", e.points, e.topic,
+        l.answer, coalesce(l.teacher_score, l.auto_score) as score, l.feedback, l.created_at as "createdAt"
+      from latest l join treoo.assignment a on a.id = l.assignment_id join treoo.exercise e on e.id = a.exercise_id
+      where l.rn = 1 and coalesce(l.teacher_score, l.auto_score) is not null and coalesce(l.teacher_score, l.auto_score) < e.points
+      order by l.created_at desc`);
+    return rows.rows.map((r) => ({ ...r, prompt: r.type === 'gap_fill' ? maskPrompt(r.prompt) : r.prompt }));
+  });
+
+  app.get('/progress', async (req) => {
+    const c = ctx(req, 'student');
+    const att = await db.select({ status: attendance.status, n: sql<number>`count(*)::int` }).from(attendance)
+      .where(and(eq(attendance.academyId, c.academyId), eq(attendance.studentId, c.userId))).groupBy(attendance.status);
+    const topics = await db.execute<{ topic: string; tasks: number; pct: number | null }>(sql`
+      with latest as (
+        select distinct on (t.assignment_id) t.assignment_id, coalesce(t.teacher_score, t.auto_score) as score
+        from treoo.attempt t where t.academy_id = ${c.academyId} and t.student_id = ${c.userId}
+        order by t.assignment_id, t.created_at desc)
+      select coalesce(e.topic, 'General') as topic, count(*)::int as tasks,
+             round((100 * avg(l.score / e.points))::numeric, 0)::float as pct
+      from latest l join treoo.assignment a on a.id = l.assignment_id join treoo.exercise e on e.id = a.exercise_id
+      group by 1 order by 1`);
+    return { attendance: Object.fromEntries(att.map((a) => [a.status, a.n])), topics: topics.rows };
+  });
+};
