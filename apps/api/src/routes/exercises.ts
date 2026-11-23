@@ -7,11 +7,18 @@ import { getManagedGroup } from '../lib/access.js';
 import { badRequest, forbidden, notFound } from '../lib/errors.js';
 import { isoDate, optText, parse, reqText, uuidParam } from '../lib/validate.js';
 
+/** Gap fill: the prompt marks each gap as {{answer}} or {{answer|alternative}}. */
+export const GAP = /\{\{([^{}]{1,120})\}\}/g;
+export const gapAnswers = (prompt: string) => [...prompt.matchAll(GAP)].map((m) => m[1]!.split('|').map((x) => x.trim()).filter(Boolean));
+/** What students see: gaps without their answers. */
+export const maskPrompt = (prompt: string) => prompt.replace(GAP, '_____');
+const norm = (x: string) => x.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, ' ').trim();
+
 export const ExerciseBody = z.object({
-  type: z.enum(['single_choice', 'true_false', 'short_answer']),
+  type: z.enum(['single_choice', 'true_false', 'short_answer', 'gap_fill']),
   prompt: reqText(1000, 'Question'),
   options: z.array(z.string().trim().max(300)).max(6).nullable().optional(),
-  correctAnswer: z.union([z.number().int(), z.boolean(), z.string().max(1000), z.null()]).optional(),
+  correctAnswer: z.union([z.number().int(), z.boolean(), z.string().max(1000), z.array(z.array(z.string())), z.null()]).optional(),
   topic: optText(200),
   points: z.number().int().min(1).max(100).default(1),
 }).superRefine((e, c) => {
@@ -21,6 +28,11 @@ export const ExerciseBody = z.object({
     if (typeof e.correctAnswer !== 'number' || e.correctAnswer < 0 || e.correctAnswer >= opts.length) c.addIssue({ code: 'custom', path: ['correctAnswer'], message: 'Mark which option is correct.' });
   }
   if (e.type === 'true_false' && typeof e.correctAnswer !== 'boolean') c.addIssue({ code: 'custom', path: ['correctAnswer'], message: 'Choose True or False as the correct answer.' });
+  if (e.type === 'gap_fill') {
+    const gaps = gapAnswers(e.prompt);
+    if (!gaps.length || gaps.some((g) => !g.length)) c.addIssue({ code: 'custom', path: ['prompt'], message: 'Mark each gap with its answer in double braces, e.g. I {{have been}} to Scotland.' });
+    if (gaps.length > 20) c.addIssue({ code: 'custom', path: ['prompt'], message: 'Use at most 20 gaps per exercise.' });
+  }
 });
 export type ExerciseInput = z.infer<typeof ExerciseBody>;
 
@@ -31,13 +43,20 @@ export function normaliseExercise(e: ExerciseInput) {
     points: e.points,
     topic: e.topic,
     options: e.type === 'single_choice' ? (e.options ?? []).filter(Boolean) : null,
-    correctAnswer: e.type === 'short_answer' ? (typeof e.correctAnswer === 'string' && e.correctAnswer.trim() ? e.correctAnswer.trim() : null) : (e.correctAnswer ?? null),
+    correctAnswer: e.type === 'gap_fill' ? gapAnswers(e.prompt)
+      : e.type === 'short_answer' ? (typeof e.correctAnswer === 'string' && e.correctAnswer.trim() ? e.correctAnswer.trim() : null)
+      : ((e.correctAnswer ?? null) as number | boolean | null),
   };
 }
 
 /** Auto-scores closed questions; open answers wait for the teacher (the teacher keeps control of evaluation). */
 export function autoScore(ex: { type: string; correctAnswer: unknown; points: number }, answer: unknown): number | null {
   if (ex.type === 'single_choice' || ex.type === 'true_false') return answer === ex.correctAnswer ? ex.points : 0;
+  if (ex.type === 'gap_fill' && Array.isArray(ex.correctAnswer) && Array.isArray(answer)) {
+    const key = ex.correctAnswer as string[][];
+    const right = key.filter((alts, i) => typeof answer[i] === 'string' && alts.some((a) => norm(a) === norm(answer[i] as string))).length;
+    return Math.round((ex.points * right / key.length) * 100) / 100;
+  }
   return null;
 }
 

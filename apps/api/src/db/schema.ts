@@ -1,5 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
+  boolean,
   check,
   date,
   doublePrecision,
@@ -28,7 +30,7 @@ export const lessonStatusEnum = treoo.enum('lesson_status', ['draft', 'ready']);
 export const extractionStatusEnum = treoo.enum('extraction_status', ['none', 'manual', 'ai', 'mock', 'failed']);
 export const sessionStatusEnum = treoo.enum('class_session_status', ['planned', 'delivered']);
 export const attendanceStatusEnum = treoo.enum('attendance_status', ['present', 'absent', 'late', 'excused']);
-export const exerciseTypeEnum = treoo.enum('exercise_type', ['single_choice', 'true_false', 'short_answer']);
+export const exerciseTypeEnum = treoo.enum('exercise_type', ['single_choice', 'true_false', 'short_answer', 'gap_fill']);
 
 // ---------- Organisation & access ----------
 
@@ -70,6 +72,7 @@ export const studentGroup = treoo.table('student_group', {
   level: text('level'),
   schedule: text('schedule'),
   teacherId: uuid('teacher_id').references(() => appUser.id, { onDelete: 'set null' }),
+  siteId: uuid('site_id').references((): AnyPgColumn => site.id, { onDelete: 'set null' }),
   createdAt: createdAt(),
 }, (t) => [index('student_group_academy_idx').on(t.academyId)]);
 
@@ -110,6 +113,7 @@ export const lesson = treoo.table('lesson', {
   objective: text('objective'),
   methodology: text('methodology'),
   notes: text('notes'),
+  curriculumTopicId: uuid('curriculum_topic_id').references((): AnyPgColumn => curriculumTopic.id, { onDelete: 'set null' }),
   status: lessonStatusEnum('status').notNull().default('draft'),
   aiOrigin: text('ai_origin'),
   revision: integer('revision').notNull().default(1),
@@ -162,6 +166,7 @@ export const classSession = treoo.table('class_session', {
   privateNotes: text('private_notes'),
   boardKey: text('board_key'),
   shareBoard: integer('share_board').notNull().default(0),
+  shareMaterial: integer('share_material').notNull().default(0),
   deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   publishedAt: timestamp('published_at', { withTimezone: true }),
   createdAt: createdAt(),
@@ -183,7 +188,7 @@ export const exercise = treoo.table('exercise', {
   type: exerciseTypeEnum('type').notNull(),
   prompt: text('prompt').notNull(),
   options: jsonb('options').$type<string[]>(),
-  correctAnswer: jsonb('correct_answer').$type<number | boolean | string | null>(),
+  correctAnswer: jsonb('correct_answer').$type<number | boolean | string | string[][] | null>(),
   points: integer('points').notNull().default(1),
   createdAt: createdAt(),
 }, (t) => [index('exercise_academy_idx').on(t.academyId)]);
@@ -203,7 +208,7 @@ export const attempt = treoo.table('attempt', {
   academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
   assignmentId: uuid('assignment_id').notNull().references(() => assignment.id, { onDelete: 'cascade' }),
   studentId: uuid('student_id').notNull().references(() => appUser.id, { onDelete: 'cascade' }),
-  answer: jsonb('answer').$type<number | boolean | string>().notNull(),
+  answer: jsonb('answer').$type<number | boolean | string | string[]>().notNull(),
   autoScore: doublePrecision('auto_score'),
   teacherScore: doublePrecision('teacher_score'),
   feedback: text('feedback'),
@@ -252,3 +257,88 @@ export const studentNote = treoo.table('student_note', {
   body: text('body').notNull(),
   createdAt: createdAt(),
 }, (t) => [index('student_note_student_idx').on(t.academyId, t.studentId, t.createdAt)]);
+
+// ---------- v3: sites, curriculum, assessments, calendar, goals ----------
+
+export const site = treoo.table('site', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
+  name: text('name').notNull(),
+  address: text('address'),
+  createdAt: createdAt(),
+}, (t) => [index('site_academy_idx').on(t.academyId)]);
+
+/** Academy-owned curriculum: level → units → topics with objectives (DEC-01). */
+export const curriculumUnit = treoo.table('curriculum_unit', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
+  level: text('level').notNull(),
+  position: integer('position').notNull(),
+  title: text('title').notNull(),
+  description: text('description'),
+  createdAt: createdAt(),
+}, (t) => [index('curriculum_unit_level_idx').on(t.academyId, t.level, t.position)]);
+
+export const curriculumTopic = treoo.table('curriculum_topic', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
+  unitId: uuid('unit_id').notNull().references(() => curriculumUnit.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull(),
+  title: text('title').notNull(),
+  objective: text('objective'),
+  skill: text('skill'),
+}, (t) => [index('curriculum_topic_unit_idx').on(t.unitId, t.position)]);
+
+export const assessmentKindEnum = treoo.enum('assessment_kind', ['baseline', 'checkpoint', 'final', 'quiz']);
+export type SkillScores = Partial<Record<'reading' | 'listening' | 'speaking' | 'writing' | 'grammar', { score: number; max: number }>>;
+
+/** Multi-skill assessment evidence. A CEFR estimate is optional and never an official certificate. */
+export const assessment = treoo.table('assessment', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
+  studentId: uuid('student_id').notNull().references(() => appUser.id, { onDelete: 'cascade' }),
+  groupId: uuid('group_id').references(() => studentGroup.id, { onDelete: 'set null' }),
+  assessorId: uuid('assessor_id').notNull().references(() => appUser.id, { onDelete: 'restrict' }),
+  kind: assessmentKindEnum('kind').notNull(),
+  takenOn: date('taken_on').notNull(),
+  instrument: text('instrument'),
+  scores: jsonb('scores').$type<SkillScores>().notNull(),
+  cefr: text('cefr'),
+  strengths: text('strengths'),
+  nextSteps: text('next_steps'),
+  sharedWithStudent: boolean('shared_with_student').notNull().default(true),
+  createdAt: createdAt(),
+}, (t) => [index('assessment_student_idx').on(t.academyId, t.studentId, t.takenOn)]);
+
+export const eventKindEnum = treoo.enum('calendar_event_kind', ['holiday', 'event', 'exam']);
+
+export const calendarEvent = treoo.table('calendar_event', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
+  siteId: uuid('site_id').references(() => site.id, { onDelete: 'set null' }),
+  kind: eventKindEnum('kind').notNull(),
+  title: text('title').notNull(),
+  description: text('description'),
+  startsOn: date('starts_on').notNull(),
+  endsOn: date('ends_on').notNull(),
+  capacity: integer('capacity'),
+  signupOpen: boolean('signup_open').notNull().default(false),
+  createdAt: createdAt(),
+}, (t) => [index('calendar_event_dates_idx').on(t.academyId, t.startsOn), check('calendar_event_range', sql`${t.endsOn} >= ${t.startsOn}`)]);
+
+export const eventSignup = treoo.table('event_signup', {
+  academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
+  eventId: uuid('event_id').notNull().references(() => calendarEvent.id, { onDelete: 'cascade' }),
+  studentId: uuid('student_id').notNull().references(() => appUser.id, { onDelete: 'cascade' }),
+  createdAt: createdAt(),
+}, (t) => [primaryKey({ columns: [t.eventId, t.studentId] })]);
+
+export const studentGoal = treoo.table('student_goal', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
+  studentId: uuid('student_id').notNull().references(() => appUser.id, { onDelete: 'cascade' }),
+  text: text('text').notNull(),
+  targetDate: date('target_date'),
+  doneAt: timestamp('done_at', { withTimezone: true }),
+  createdAt: createdAt(),
+}, (t) => [index('student_goal_student_idx').on(t.academyId, t.studentId)]);

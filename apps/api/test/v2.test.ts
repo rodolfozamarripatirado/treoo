@@ -116,7 +116,7 @@ describe('lesson reuse', () => {
     const copy = (await app.inject({ url: `/api/lessons/${r.json().id}`, ...ana })).json();
     expect(copy).toMatchObject({ title: 'Present Perfect: life experiences (copy)', status: 'draft', revision: 1 });
     expect(copy.activities).toHaveLength(4);
-    expect(copy.exercises).toHaveLength(3);
+    expect(copy.exercises).toHaveLength(4);
     expect(copy.vocab).toHaveLength(3);
     const alex = await login('alex@northbridge.demo');
     expect((await app.inject({ method: 'POST', url: `/api/lessons/${IDS.lesson}/duplicate`, ...alex })).statusCode).toBe(404);

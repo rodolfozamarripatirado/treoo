@@ -14,8 +14,9 @@ export const progressRoutes: FastifyPluginAsync = async (app) => {
 
   app.get('/overview', async (req) => {
     const c = ctx(req, 'admin', 'teacher');
+    const f = parse(z.object({ siteId: z.string().uuid().optional(), teacherId: z.string().uuid().optional() }), req.query);
     const res = await db.execute(sql`
-      select g.id, g.name, g.level, u.display_name as "teacherName",
+      select g.id, g.name, g.level, u.display_name as "teacherName", g.teacher_id as "teacherId", st.name as "siteName",
         (select count(*)::int from treoo.enrollment e where e.group_id = g.id) as students,
         (select count(*)::int from treoo.class_session s where s.group_id = g.id and s.status = 'delivered') as "classesDelivered",
         (select round(100.0 * avg(case when a.status in ('present','late') then 1 else 0 end))::int
@@ -24,8 +25,9 @@ export const progressRoutes: FastifyPluginAsync = async (app) => {
            select distinct on (t.assignment_id, t.student_id) coalesce(t.teacher_score, t.auto_score) as score, e.points
            from treoo.attempt t join treoo.assignment a on a.id = t.assignment_id join treoo.exercise e on e.id = a.exercise_id
            where a.group_id = g.id order by t.assignment_id, t.student_id, t.created_at desc) x) as "avgScore"
-      from treoo.student_group g left join treoo.app_user u on u.id = g.teacher_id
+      from treoo.student_group g left join treoo.app_user u on u.id = g.teacher_id left join treoo.site st on st.id = g.site_id
       where g.academy_id = ${c.academyId} ${c.role === 'teacher' ? sql`and g.teacher_id = ${c.userId}` : sql``}
+        ${f.siteId ? sql`and g.site_id = ${f.siteId}` : sql``} ${f.teacherId ? sql`and g.teacher_id = ${f.teacherId}` : sql``}
       order by g.name`);
     return res.rows;
   });

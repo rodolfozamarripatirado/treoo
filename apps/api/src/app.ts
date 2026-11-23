@@ -25,6 +25,10 @@ import { progressRoutes } from './routes/progress.js';
 import { vocabRoutes } from './routes/vocab.js';
 import { dashboardRoutes } from './routes/dashboard.js';
 import { studentRoutes } from './routes/students.js';
+import { academyRoutes } from './routes/academy.js';
+import { curriculumRoutes } from './routes/curriculum.js';
+import { assessmentRoutes } from './routes/assessments.js';
+import { calendarRoutes } from './routes/calendar.js';
 
 export interface Deps {
   env: Env;
@@ -100,6 +104,10 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
   await app.register(vocabRoutes, { prefix: '/api' });
   await app.register(dashboardRoutes, { prefix: '/api/dashboard' });
   await app.register(studentRoutes, { prefix: '/api/students' });
+  await app.register(academyRoutes, { prefix: '/api/academy' });
+  await app.register(curriculumRoutes, { prefix: '/api/curriculum' });
+  await app.register(assessmentRoutes, { prefix: '/api/assessments' });
+  await app.register(calendarRoutes, { prefix: '/api' });
 
   // Serve the built web app (single container) with SPA fallback.
   const webDist = env.WEB_DIST ? path.resolve(env.WEB_DIST) : null;

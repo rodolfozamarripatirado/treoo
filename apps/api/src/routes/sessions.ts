@@ -91,7 +91,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.post('/:id/deliver', { bodyLimit: 8 * 1024 * 1024 }, async (req) => {
     const { id } = parse(uuidParam, req.params);
     const { c, s } = await managed(req, id);
-    const body = parse(z.object({ sharedNotes: optText(20_000), privateNotes: optText(20_000), board: z.string().max(7_500_000).nullable().optional(), shareBoard: z.boolean().default(false) }), req.body);
+    const body = parse(z.object({ sharedNotes: optText(20_000), privateNotes: optText(20_000), board: z.string().max(7_500_000).nullable().optional(), shareBoard: z.boolean().default(false), shareMaterial: z.boolean().optional() }), req.body);
     let boardKey = s.boardKey;
     if (body.board) {
       const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(body.board);
@@ -102,6 +102,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     }
     const [u] = await db.update(classSession).set({
       sharedNotes: body.sharedNotes, privateNotes: body.privateNotes, boardKey, shareBoard: body.shareBoard ? 1 : 0,
+      ...(body.shareMaterial === undefined ? {} : { shareMaterial: body.shareMaterial ? 1 : 0 }),
       status: 'delivered', deliveredAt: s.deliveredAt ?? new Date(),
     }).where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId))).returning();
     const { boardKey: _k, ...rest } = u!;

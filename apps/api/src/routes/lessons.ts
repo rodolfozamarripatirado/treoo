@@ -3,7 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { ctx, type Ctx } from '../auth/context.js';
 import type { Db } from '../db/client.js';
-import { activity, appUser, exercise, lesson, material, vocabItem } from '../db/schema.js';
+import { activity, appUser, curriculumTopic, exercise, lesson, material, vocabItem } from '../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors.js';
 import { idempotent, readKey } from '../lib/idempotency.js';
 import { optText, parse, reqText, uuidParam } from '../lib/validate.js';
@@ -38,6 +38,7 @@ const LessonFields = z.object({
   notes: optText(5000),
   status: z.enum(['draft', 'ready']).default('draft'),
   materialId: z.string().uuid().nullable().optional().transform((v) => v ?? null),
+  curriculumTopicId: z.string().uuid().nullable().optional().transform((v) => v ?? null),
   activities: z.array(ActivityBody).max(50, 'A lesson can have up to 50 activities.').default([]),
 });
 
@@ -78,6 +79,12 @@ async function checkMaterial(tx: Db | Tx, c: Ctx, materialId: string | null) {
   if (!materialId) return;
   const [m] = await tx.select({ id: material.id }).from(material).where(and(eq(material.id, materialId), eq(material.academyId, c.academyId), eq(material.ownerId, c.userId)));
   if (!m) throw badRequest('You can only link your own material to a lesson.');
+}
+
+async function checkTopic(tx: Db | Tx, c: Ctx, topicId: string | null) {
+  if (!topicId) return;
+  const [t] = await tx.select({ id: curriculumTopic.id }).from(curriculumTopic).where(and(eq(curriculumTopic.id, topicId), eq(curriculumTopic.academyId, c.academyId)));
+  if (!t) throw badRequest('That curriculum topic does not exist in this academy.');
 }
 
 async function writeActivities(tx: Tx, academyId: string, lessonId: string, acts: z.infer<typeof ActivityBody>[]) {
@@ -122,6 +129,7 @@ export const lessonRoutes: FastifyPluginAsync = async (app) => {
     const body = parse(CreateBody, req.body);
     const r = await idempotent(db, c, key, 'create_lesson', body, async (tx) => {
       await checkMaterial(tx, c, body.materialId);
+      await checkTopic(tx, c, body.curriculumTopicId);
       const { activities: acts, exercises: exs, ...fields } = body;
       const [l] = await tx.insert(lesson).values({ ...fields, academyId: c.academyId, ownerId: c.userId }).returning();
       await writeActivities(tx, c.academyId, l!.id, acts);
@@ -140,6 +148,7 @@ export const lessonRoutes: FastifyPluginAsync = async (app) => {
     const body = parse(SaveBody, req.body);
     const r = await idempotent(db, c, key, 'save_lesson', { id, ...body }, async (tx) => {
       await checkMaterial(tx, c, body.materialId);
+      await checkTopic(tx, c, body.curriculumTopicId);
       const { activities: acts, expectedRevision, ...fields } = body;
       const [u] = await tx.update(lesson)
         .set({ ...fields, revision: sql`${lesson.revision} + 1`, updatedAt: new Date() })
@@ -166,7 +175,7 @@ export const lessonRoutes: FastifyPluginAsync = async (app) => {
     const copy = await db.transaction(async (tx) => {
       const [l] = await tx.insert(lesson).values({
         academyId: c.academyId, ownerId: c.userId, title: `${src.title} (copy)`.slice(0, 200), topic: src.topic, level: src.level,
-        objective: src.objective, methodology: src.methodology, notes: src.notes, status: 'draft', aiOrigin: src.aiOrigin,
+        objective: src.objective, methodology: src.methodology, notes: src.notes, status: 'draft', aiOrigin: src.aiOrigin, curriculumTopicId: src.curriculumTopicId,
         // A material belongs to its uploader; only keep the link when copying your own lesson.
         materialId: src.ownerId === c.userId ? src.materialId : null,
       }).returning();
