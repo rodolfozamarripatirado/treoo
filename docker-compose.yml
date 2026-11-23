@@ -2,6 +2,7 @@
 #   docker compose up -d --build                 # app + PostgreSQL, simulated AI
 #   docker compose --profile ai up -d --build     # also starts Ollama (set AI_MODE=ollama in .env)
 #   docker compose exec app node apps/api/dist/db/seed.js   # load fictitious demo data
+#   ./deploy/publish.sh                          # all of the above + public HTTPS URL via Cloudflare Quick Tunnel
 services:
   db:
     image: postgres:16-alpine
@@ -36,6 +37,15 @@ services:
     image: ollama/ollama:latest
     profiles: ["ai"]
     volumes: [ollama:/root/.ollama]
+    restart: unless-stopped
+
+  # Temporary public HTTPS URL (https://*.trycloudflare.com). No Cloudflare account or token needed.
+  # The URL changes every time this service is recreated.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate --url http://app:3000
+    depends_on: [app]
     restart: unless-stopped
 
 volumes:
