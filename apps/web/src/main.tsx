@@ -20,6 +20,10 @@ import { Today } from './pages/Today';
 import { StudentProfile } from './pages/StudentProfile';
 import { LessonPrint } from './pages/LessonPrint';
 import { VocabLab } from './pages/VocabLab';
+import { Academy } from './pages/Academy';
+import { Curriculum } from './pages/Curriculum';
+import { CalendarPage } from './pages/Calendar';
+import { MyCalendar } from './pages/StudentV3';
 
 function Home() {
   const { me } = useSession();
@@ -42,6 +46,10 @@ function App() {
         <Route path="/today" element={<Today />} />
         <Route path="/students/:id" element={<StudentProfile />} />
         <Route path="/me/vocab" element={<VocabLab />} />
+        <Route path="/me/calendar" element={<MyCalendar />} />
+        <Route path="/academy" element={<Academy />} />
+        <Route path="/curriculum" element={<Curriculum />} />
+        <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/prepare" element={<Prepare />} />
         <Route path="/prepare/capture" element={<Capture />} />
         <Route path="/lessons/new" element={<LessonEditor />} />

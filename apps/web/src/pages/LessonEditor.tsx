@@ -9,14 +9,14 @@ const KINDS = ['warm-up', 'presentation', 'controlled practice', 'freer practice
 
 interface Form {
   title: string; topic: string; level: string; objective: string; methodology: string; notes: string;
-  status: 'draft' | 'ready'; materialId: string | null; activities: (Activity & { key: string; durationText: string })[];
+  status: 'draft' | 'ready'; materialId: string | null; curriculumTopicId: string | null; activities: (Activity & { key: string; durationText: string })[];
 }
 type Draft = { title: string; topic?: string | null; level?: string | null; objective?: string | null; methodology?: string | null; activities: Activity[]; exercises: ExerciseDraft[] };
 
 const key = () => crypto.randomUUID();
 const toForm = (l: Partial<Lesson> & { activities: Activity[] }): Form => ({
   title: l.title ?? '', topic: l.topic ?? '', level: l.level ?? '', objective: l.objective ?? '', methodology: l.methodology ?? '', notes: l.notes ?? '',
-  status: l.status ?? 'draft', materialId: l.materialId ?? null,
+  status: l.status ?? 'draft', materialId: l.materialId ?? null, curriculumTopicId: l.curriculumTopicId ?? null,
   activities: l.activities.map((a) => ({ ...a, key: key(), durationText: a.durationMinutes == null ? '' : String(a.durationMinutes) })),
 });
 const parseDuration = (t: string): number | null | 'invalid' => {
@@ -27,7 +27,7 @@ const parseDuration = (t: string): number | null | 'invalid' => {
 };
 const payload = (f: Form) => ({
   title: f.title, topic: f.topic, level: f.level, objective: f.objective, methodology: f.methodology, notes: f.notes,
-  status: f.status, materialId: f.materialId,
+  status: f.status, materialId: f.materialId, curriculumTopicId: f.curriculumTopicId,
   activities: f.activities.map((a) => ({ kind: a.kind || null, title: a.title || null, instructions: a.instructions || null, durationMinutes: parseDuration(a.durationText) as number | null })),
 });
 
@@ -52,6 +52,8 @@ export function LessonEditor() {
   const [material, setMaterial] = useState<Material | null>(null);
   const [showEditor, setShowEditor] = useState(true);
   const [aiOn, setAiOn] = useState(false);
+  const [units, setUnits] = useState<{ id: string; level: string; title: string; topics: { id: string; title: string }[] }[]>([]);
+  useEffect(() => { api<typeof units>('/curriculum').then(setUnits).catch(() => setUnits([])); }, []);
   useEffect(() => { api<{ available: boolean }>('/ai/status').then((r) => setAiOn(r.available)).catch(() => setAiOn(false)); }, []);
 
   useEffect(() => {
@@ -165,6 +167,14 @@ export function LessonEditor() {
               <label className="field">Level<input value={form.level} onChange={(e) => set('level', e.target.value)} placeholder="e.g. B1+" /></label>
               <label className="field">Status<select value={form.status} onChange={(e) => set('status', e.target.value as Form['status'])}><option value="draft">Draft</option><option value="ready">Ready to teach</option></select></label>
             </div>
+            {units.length > 0 && (
+              <label className="field">Curriculum topic <span className="hint">Links this lesson to the academy curriculum so coverage is tracked when you teach it.</span>
+                <select value={form.curriculumTopicId ?? ''} onChange={(e) => set('curriculumTopicId', e.target.value || null)}>
+                  <option value="">Not linked</option>
+                  {units.map((u) => <optgroup key={u.id} label={`${u.level}, ${u.title}`}>{u.topics.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}</optgroup>)}
+                </select>
+              </label>
+            )}
             <label className="field">Objective<textarea rows={2} value={form.objective} onChange={(e) => set('objective', e.target.value)} /></label>
             <label className="field">Methodology<input value={form.methodology} onChange={(e) => set('methodology', e.target.value)} /></label>
           </section>

@@ -3,18 +3,19 @@ import { Link, useParams } from 'react-router-dom';
 import { api, fmtDate, type Exercise } from '../api';
 import { ErrorNote, Loading, RouteBar, StatusPill } from '../components/ui';
 import { useLoad } from '../session';
+import { GoalsAndAssessments, Library, ReviewMistakes } from './StudentV3';
 
 interface DiaryRow { id: string; scheduledOn: string; topic: string; groupName: string; lessonTitle: string | null; objective: string | null; level: string | null; sharedNotes: string | null; hasBoard: boolean; myAttendance: string | null }
 interface Task {
   id: string; dueOn: string | null; groupName: string; sessionDate: string | null; sessionId: string | null; attemptsLeft: number;
-  exercise: Pick<Exercise, 'type' | 'prompt' | 'options' | 'points' | 'topic'> & { correctAnswer?: Exercise['correctAnswer'] };
+  exercise: Pick<Exercise, 'type' | 'prompt' | 'options' | 'points' | 'topic'> & { correctAnswer?: Exercise['correctAnswer']; gaps?: number };
   attempts: { id: string; answer: unknown; autoScore: number | null; teacherScore: number | null; feedback: string | null; createdAt: string }[];
 }
 
 /** My Classes: the same published classes, found by day or by topic. */
 export function MyClasses() {
   const { data, error } = useLoad(() => api<DiaryRow[]>('/portal/diary'), []);
-  const [view, setView] = useState<'date' | 'topic'>('date');
+  const [view, setView] = useState<'date' | 'topic' | 'library'>('date');
   const groups = useMemo(() => {
     const m = new Map<string, DiaryRow[]>();
     for (const r of data ?? []) {
@@ -31,9 +32,10 @@ export function MyClasses() {
       <div className="tabs" role="tablist">
         <button role="tab" aria-selected={view === 'date'} onClick={() => setView('date')}>By date</button>
         <button role="tab" aria-selected={view === 'topic'} onClick={() => setView('topic')}>By topic</button>
+        <button role="tab" aria-selected={view === 'library'} onClick={() => setView('library')}>Library</button>
       </div>
       <ErrorNote msg={error} />
-      {!data ? <Loading /> : data.length === 0 ? <div className="empty"><p>No classes published yet. When your teacher publishes a class, it appears here.</p></div> : groups.map(([k, rows]) => (
+      {view === 'library' ? <Library /> : !data ? <Loading /> : data.length === 0 ? <div className="empty"><p>No classes published yet. When your teacher publishes a class, it appears here.</p></div> : groups.map(([k, rows]) => (
         <section key={k}>
           <h2 className="day-head">{view === 'date' ? fmtDate(`${k}-15`, { month: 'long', year: 'numeric' }) : k}</h2>
           <ul className="list">
@@ -78,13 +80,18 @@ export function MyClass() {
 
 export function MyTasks() {
   const { data, error, reload } = useLoad(() => api<Task[]>('/portal/assignments'), []);
+  const [tab, setTab] = useState<'tasks' | 'review'>('tasks');
   const pending = (data ?? []).filter((t) => t.attempts.length === 0);
   const done = (data ?? []).filter((t) => t.attempts.length > 0);
   return (
     <>
       <div className="page-head"><div><h1>Tasks</h1><p className="muted">Answer at your own pace. You have up to 3 attempts per task.</p></div></div>
+      <div className="tabs" role="tablist">
+        <button role="tab" aria-selected={tab === 'tasks'} onClick={() => setTab('tasks')}>My tasks</button>
+        <button role="tab" aria-selected={tab === 'review'} onClick={() => setTab('review')}>Review mistakes</button>
+      </div>
       <ErrorNote msg={error} />
-      {!data ? <Loading /> : (
+      {tab === 'review' ? <ReviewMistakes /> : !data ? <Loading /> : (
         <>
           <h2>To do</h2>
           {pending.length === 0 ? <p className="muted">Nothing pending. Well done.</p> : <div className="stack">{pending.map((t) => <TaskCard key={t.id} t={t} onDone={reload} />)}</div>}
@@ -97,7 +104,7 @@ export function MyTasks() {
 }
 
 function TaskCard({ t, onDone }: { t: Task; onDone: () => void }) {
-  const [answer, setAnswer] = useState<number | boolean | string | null>(null);
+  const [answer, setAnswer] = useState<number | boolean | string | string[] | null>(t.exercise.type === 'gap_fill' ? Array(t.exercise.gaps ?? 0).fill('') : null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const ex = t.exercise;
@@ -105,14 +112,19 @@ function TaskCard({ t, onDone }: { t: Task; onDone: () => void }) {
   const score = latest ? latest.teacherScore ?? latest.autoScore : null;
   const send = async () => {
     setBusy(true); setErr(null);
-    try { await api(`/portal/assignments/${t.id}/attempts`, { body: { answer } }); setAnswer(null); onDone(); }
+    try { await api(`/portal/assignments/${t.id}/attempts`, { body: { answer } }); setAnswer(t.exercise.type === 'gap_fill' ? Array(t.exercise.gaps ?? 0).fill('') : null); onDone(); }
     catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   };
-  const show = (a: unknown) => ex.type === 'single_choice' ? ex.options?.[a as number] : ex.type === 'true_false' ? (a ? 'True' : 'False') : String(a);
+  const show = (a: unknown) => ex.type === 'single_choice' ? ex.options?.[a as number] : ex.type === 'true_false' ? (a ? 'True' : 'False') : ex.type === 'gap_fill' ? (a as string[]).join(', ') : String(a);
   return (
     <article className="sheet stack">
       <div className="muted small">{[ex.topic, t.groupName, t.dueOn ? `due ${fmtDate(t.dueOn)}` : null].filter(Boolean).join(', ')}</div>
-      <h3 style={{ margin: 0 }}>{ex.prompt}</h3>
+      {ex.type === 'gap_fill' && t.attemptsLeft > 0 ? (
+        <p style={{ margin: 0, fontSize: '1.1rem', lineHeight: 2.2 }}>{ex.prompt.split('_____').map((part, i, arr) => (
+          <span key={i}>{part}{i < arr.length - 1 && <input className="gap-input" aria-label={`Gap ${i + 1}`} value={Array.isArray(answer) ? answer[i] ?? '' : ''} onChange={(e) => { const a = Array.isArray(answer) ? [...answer] : Array(t.exercise.gaps ?? 0).fill(''); a[i] = e.target.value; setAnswer(a); }} />}</span>
+        ))}</p>
+      ) : <h3 style={{ margin: 0 }}>{ex.prompt}</h3>}
+      {ex.type === 'gap_fill' && latest && Array.isArray(ex.correctAnswer) && <p className="small" style={{ margin: 0 }}>Answers: {(ex.correctAnswer as unknown as string[][]).map((g) => g.join(' / ')).join(', ')}</p>}
       {latest && (
         <div className={`notice ${score == null ? 'warn' : score >= ex.points ? 'info' : 'warn'}`}>
           <p>Your answer: <strong>{show(latest.answer)}</strong>. {score == null ? 'Waiting for your teacher to mark it.' : `Score ${score}/${ex.points}.`}</p>
@@ -129,7 +141,7 @@ function TaskCard({ t, onDone }: { t: Task; onDone: () => void }) {
           ))}</div>}
           {ex.type === 'short_answer' && <label className="field"><span className="sr-only">Your answer</span><textarea rows={3} value={typeof answer === 'string' ? answer : ''} onChange={(e) => setAnswer(e.target.value)} /></label>}
           <ErrorNote msg={err} />
-          <div className="row"><button className="btn primary" disabled={busy || answer === null || answer === ''} onClick={send}>{latest ? 'Try again' : 'Send answer'}</button><span className="muted small">{t.attemptsLeft} {t.attemptsLeft === 1 ? 'attempt' : 'attempts'} left</span></div>
+          <div className="row"><button className="btn primary" disabled={busy || answer === null || answer === '' || (Array.isArray(answer) && answer.some((x) => !x.trim()))} onClick={send}>{latest ? 'Try again' : 'Send answer'}</button><span className="muted small">{t.attemptsLeft} {t.attemptsLeft === 1 ? 'attempt' : 'attempts'} left</span></div>
         </>
       )}
     </article>
@@ -147,7 +159,7 @@ export function MyProgress() {
       <div className="page-head"><div><h1>My progress</h1><p className="muted">Based on attendance taken and the tasks you have answered.</p></div></div>
       <div className="grid-2" style={{ alignItems: 'start' }}>
         <section className="sheet stack">
-          <h2 style={{ margin: 0 }}>Attendance</h2>
+          <h2 style={{ margin: 0 }}>Attendance </h2>
           {total === 0 ? <p className="muted">No attendance recorded yet.</p> : <>
             <p style={{ fontFamily: 'var(--display)', fontSize: '2.4rem', margin: 0 }}>{attended} of {total}</p>
             <p className="muted" style={{ margin: 0 }}>classes attended{data.attendance.late ? `, ${data.attendance.late} late` : ''}</p>
@@ -163,6 +175,7 @@ export function MyProgress() {
           ))}
         </section>
       </div>
+      <GoalsAndAssessments />
     </>
   );
 }

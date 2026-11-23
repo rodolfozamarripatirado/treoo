@@ -57,15 +57,15 @@ export interface Me {
   memberships: { academyId: string; academyName: string; role: Role }[];
 }
 export interface Activity { id?: string; kind: string | null; title: string | null; instructions: string | null; durationMinutes: number | null }
-export interface Exercise { id: string; type: 'single_choice' | 'true_false' | 'short_answer'; prompt: string; options: string[] | null; correctAnswer: number | boolean | string | null; topic: string | null; points: number }
+export interface Exercise { id: string; type: 'single_choice' | 'true_false' | 'short_answer' | 'gap_fill'; prompt: string; options: string[] | null; correctAnswer: number | boolean | string | string[][] | null; topic: string | null; points: number }
 export interface Lesson {
   id: string; title: string; topic: string | null; level: string | null; objective: string | null; methodology: string | null; notes: string | null;
-  status: 'draft' | 'ready'; materialId: string | null; aiOrigin: string | null; revision: number; updatedAt: string; ownerId: string; ownerName: string;
+  status: 'draft' | 'ready'; materialId: string | null; curriculumTopicId?: string | null; aiOrigin: string | null; revision: number; updatedAt: string; ownerId: string; ownerName: string;
   activities: Activity[]; totalMinutes: number; activitiesWithoutDuration: number; exercises?: Exercise[]; canEdit?: boolean;
 }
 export interface Material {
   id: string; title: string; source: string | null; hasOriginal: boolean; mimeType: string | null; sourceText: string | null;
   extractedText: string | null; extractionStatus: 'none' | 'manual' | 'ai' | 'mock' | 'failed'; createdAt: string; ownerName?: string;
 }
-export interface Group { id: string; name: string; level: string | null; schedule: string | null; teacherId: string | null; teacherName: string | null; studentCount: number }
+export interface Group { id: string; name: string; level: string | null; schedule: string | null; teacherId: string | null; siteId?: string | null; teacherName: string | null; studentCount: number }
 export interface Person { id: string; displayName: string; email: string; role: Role }

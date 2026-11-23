@@ -8,7 +8,7 @@ import { useLoad, useSession } from '../session';
 interface SessionRow { id: string; scheduledOn: string; topic: string | null; status: 'planned' | 'delivered'; publishedAt: string | null; groupId: string; groupName: string; lessonId: string | null }
 interface SessionDetail {
   id: string; scheduledOn: string; topic: string | null; status: 'planned' | 'delivered'; publishedAt: string | null; sharedNotes: string | null; privateNotes: string | null;
-  hasBoard: boolean; shareBoard: number; group: Group; lesson: Lesson | null; roster: { id: string; displayName: string; status: Attendance | null }[]; exercises: Exercise[];
+  hasBoard: boolean; shareBoard: number; shareMaterial: number; group: Group; lesson: Lesson | null; roster: { id: string; displayName: string; status: Attendance | null }[]; exercises: Exercise[];
 }
 type Attendance = 'present' | 'absent' | 'late' | 'excused';
 interface AssignmentRow { id: string; sessionId: string | null; prompt: string; dueOn: string | null; submitted: number; pendingReview: number }
@@ -85,7 +85,7 @@ export function ClassDetail() {
   const { data: s, error, reload } = useLoad(() => api<SessionDetail>(`/sessions/${id}`), [id]);
   const assigns = useLoad(() => (s ? api<AssignmentRow[]>(`/assignments?groupId=${s.group.id}`) : Promise.resolve([])), [s?.group.id]);
   const [att, setAtt] = useState<Record<string, Attendance>>({});
-  const [notes, setNotes] = useState({ sharedNotes: '', privateNotes: '', shareBoard: false });
+  const [notes, setNotes] = useState({ sharedNotes: '', privateNotes: '', shareBoard: false, shareMaterial: false });
   const [pick, setPick] = useState<Record<string, boolean>>({});
   const [due, setDue] = useState('');
   const [err, setErr] = useState<string | null>(null);
@@ -93,7 +93,7 @@ export function ClassDetail() {
   useEffect(() => {
     if (!s) return;
     setAtt(Object.fromEntries(s.roster.filter((r) => r.status).map((r) => [r.id, r.status!])));
-    setNotes({ sharedNotes: s.sharedNotes ?? '', privateNotes: s.privateNotes ?? '', shareBoard: !!s.shareBoard });
+    setNotes({ sharedNotes: s.sharedNotes ?? '', privateNotes: s.privateNotes ?? '', shareBoard: !!s.shareBoard, shareMaterial: !!s.shareMaterial });
   }, [s]);
 
   if (error) return <ErrorNote msg={error} />;
@@ -144,6 +144,7 @@ export function ClassDetail() {
             <label className="check"><input type="checkbox" checked={notes.shareBoard} onChange={(e) => setNotes({ ...notes, shareBoard: e.target.checked })} />Share the board with students</label>
           </div>
         )}
+        {s.lesson?.materialId && <label className="check"><input type="checkbox" checked={notes.shareMaterial} onChange={(e) => setNotes({ ...notes, shareMaterial: e.target.checked })} />Share the lesson’s worksheet in the students’ Library</label>}
         <div className="row">
           <button className="btn" onClick={() => act(() => api(`/sessions/${s.id}/deliver`, { body: notes }), 'Class record saved')}>{s.status === 'delivered' ? 'Update class record' : 'Mark as taught'}</button>
           {s.publishedAt

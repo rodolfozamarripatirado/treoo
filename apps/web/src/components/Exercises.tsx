@@ -1,14 +1,17 @@
 import { useState } from 'react';
 import type { Exercise } from '../api';
 
-export type ExerciseDraft = { type: Exercise['type']; prompt: string; options?: string[] | null; correctAnswer?: number | boolean | string | null; topic?: string | null; points?: number };
-const TYPE_LABEL: Record<Exercise['type'], string> = { single_choice: 'Multiple choice', true_false: 'True or false', short_answer: 'Short answer' };
+export type ExerciseDraft = { type: Exercise['type']; prompt: string; options?: string[] | null; correctAnswer?: number | boolean | string | string[][] | null; topic?: string | null; points?: number };
+const TYPE_LABEL: Record<Exercise['type'], string> = { single_choice: 'Multiple choice', true_false: 'True or false', short_answer: 'Short answer', gap_fill: 'Fill the gaps' };
+/** Teacher view of a gap-fill prompt: answers shown in brackets. */
+export const showGaps = (p: string) => p.replace(/\{\{([^{}]+)\}\}/g, (_m, a: string) => `[${a.split('|').join(' / ')}]`);
+export const maskGaps = (p: string) => p.replace(/\{\{[^{}]+\}\}/g, '_____');
 
 export function ExerciseSummary({ e }: { e: ExerciseDraft }) {
   return (
     <div>
       <div className="muted small">{TYPE_LABEL[e.type]}{e.points ? `, ${e.points} pt${e.points > 1 ? 's' : ''}` : ''}</div>
-      <div>{e.prompt}</div>
+      <div>{e.type === 'gap_fill' ? showGaps(e.prompt) : e.prompt}</div>
       {e.type === 'single_choice' && <ol type="a" style={{ margin: '4px 0 0', paddingLeft: 20 }}>{(e.options ?? []).map((o, i) => <li key={i} style={{ fontWeight: i === e.correctAnswer ? 700 : 400 }}>{o}{i === e.correctAnswer ? ' (correct)' : ''}</li>)}</ol>}
       {e.type === 'true_false' && <div className="small">Answer: <strong>{e.correctAnswer ? 'True' : 'False'}</strong></div>}
       {e.type === 'short_answer' && e.correctAnswer && <div className="small">Model answer: {String(e.correctAnswer)}</div>}
@@ -29,7 +32,7 @@ export function ExerciseEditor({ initial, onSave, onCancel }: { initial?: Exerci
         </label>
         <label className="field">Points<input type="number" min={1} max={100} value={e.points ?? 1} onChange={(x) => setE({ ...e, points: Math.max(1, Number(x.target.value) || 1) })} /></label>
       </div>
-      <label className="field">Question<textarea rows={2} value={e.prompt} onChange={(x) => setE({ ...e, prompt: x.target.value })} /></label>
+      <label className="field">{e.type === 'gap_fill' ? 'Text with gaps' : 'Question'}{e.type === 'gap_fill' && <span className="hint">Put each answer in double braces: I {'{{have been}}'} to Scotland. Accept alternatives with |, e.g. {'{{Have|Has}}'}.</span>}<textarea rows={2} value={e.prompt} onChange={(x) => setE({ ...e, prompt: x.target.value })} /></label>
       {e.type === 'single_choice' && (
         <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0 }}>
           <legend className="small" style={{ fontWeight: 700, marginBottom: 6 }}>Options — select the correct one</legend>

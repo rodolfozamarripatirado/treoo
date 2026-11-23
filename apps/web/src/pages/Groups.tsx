@@ -63,6 +63,8 @@ export function GroupDetail() {
   const canManage = g.data?.canManage;
   const assigns = useLoad(() => (canManage ? api<AssignmentRow[]>(`/assignments?groupId=${id}`) : Promise.resolve([])), [id, canManage]);
   const progress = useLoad(() => (canManage ? api<GroupProgress>(`/progress/group?groupId=${id}`) : Promise.resolve(null)), [id, canManage]);
+  const coverage = useLoad(() => (canManage ? api<{ level: string | null; taught: number; total: number; units: { id: string; title: string; topics: { id: string; title: string; objective: string | null; taught: { lastTaught: string; classes: number } | null }[] }[] }>(`/curriculum/coverage?groupId=${id}`) : Promise.resolve(null)), [id, canManage]);
+  const sites = useLoad(() => (isAdmin ? api<{ id: string; name: string }[]>('/academy/sites') : Promise.resolve([])), [isAdmin]);
   const [add, setAdd] = useState('');
   const [sp] = useSearchParams();
   const [open, setOpen] = useState<string | null>(sp.get('open'));
@@ -76,7 +78,9 @@ export function GroupDetail() {
   return (
     <>
       <Link className="back" to="/groups">Back to groups</Link>
-      <div className="page-head"><div><h1>{g.data.name}</h1><p className="muted">{[g.data.level, g.data.schedule].filter(Boolean).join(', ')}</p></div></div>
+      <div className="page-head"><div><h1>{g.data.name}</h1><p className="muted">{[g.data.level, g.data.schedule].filter(Boolean).join(', ')}</p></div>
+        {isAdmin && (sites.data ?? []).length > 0 && <label className="field" style={{ width: 220 }}>Site<select value={(g.data as { siteId?: string | null }).siteId ?? ''} onChange={(e) => act(() => api(`/academy/groups/${id}/site`, { method: 'PUT', body: { siteId: e.target.value || null } }), 'Site updated')}><option value="">No site</option>{sites.data!.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}
+      </div>
       <ErrorNote msg={err} />
       <div className="grid-2" style={{ alignItems: 'start' }}>
         <section className="sheet stack">
@@ -108,6 +112,19 @@ export function GroupDetail() {
           </section>
         )}
       </div>
+
+      {coverage.data && coverage.data.total > 0 && (
+        <section className="sheet stack" style={{ marginTop: 20 }}>
+          <div className="row" style={{ justifyContent: 'space-between' }}><h2 style={{ margin: 0 }}>Curriculum coverage, {coverage.data.level}</h2><span className="pill ready">{coverage.data.taught} of {coverage.data.total} topics taught</span></div>
+          <div className="meter"><span style={{ width: `${(100 * coverage.data.taught) / coverage.data.total}%` }} /></div>
+          {coverage.data.units.map((u) => (
+            <div key={u.id}><h3 style={{ margin: '10px 0 4px' }}>{u.title}</h3>
+              {u.topics.map((t) => <div key={t.id} className={`coverage-topic ${t.taught ? 'done' : ''}`}><span><strong>{t.title}</strong>{t.objective && <span className="muted small"> {t.objective}</span>}</span><span className="muted small">{t.taught ? `last taught ${fmtDate(t.taught.lastTaught)}` : 'not yet'}</span></div>)}
+            </div>
+          ))}
+          <p className="muted small" style={{ margin: 0 }}>A topic counts as taught when a class marked as taught used a lesson linked to it.</p>
+        </section>
+      )}
 
       {progress.data && progress.data.students.length > 0 && (
         <section style={{ marginTop: 20 }}>

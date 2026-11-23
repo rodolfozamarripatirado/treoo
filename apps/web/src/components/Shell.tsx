@@ -3,9 +3,9 @@ import { useSession } from '../session';
 import { Logo } from './ui';
 
 const NAV = {
-  teacher: [['/today', 'Today'], ['/prepare', 'Prepare'], ['/classes', 'Classes'], ['/groups', 'Groups'], ['/progress', 'Progress']],
-  admin: [['/today', 'Today'], ['/groups', 'Groups'], ['/people', 'People'], ['/prepare', 'Lessons'], ['/classes', 'Classes'], ['/progress', 'Progress']],
-  student: [['/me', 'My classes'], ['/me/vocab', 'Vocabulary'], ['/me/tasks', 'Tasks'], ['/me/progress', 'My progress']],
+  teacher: [['/today', 'Today'], ['/prepare', 'Prepare'], ['/classes', 'Classes'], ['/groups', 'Groups'], ['/calendar', 'Calendar'], ['/curriculum', 'Curriculum'], ['/progress', 'Progress']],
+  admin: [['/today', 'Today'], ['/groups', 'Groups'], ['/people', 'People'], ['/prepare', 'Lessons'], ['/classes', 'Classes'], ['/calendar', 'Calendar'], ['/curriculum', 'Curriculum'], ['/progress', 'Progress'], ['/academy', 'Academy']],
+  student: [['/me', 'My classes'], ['/me/tasks', 'Tasks'], ['/me/vocab', 'Vocabulary'], ['/me/calendar', 'Calendar'], ['/me/progress', 'My progress']],
 } as const;
 
 function AcademySwitch({ className }: { className?: string }) {

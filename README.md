@@ -20,6 +20,11 @@ Plataforma SaaS para academias de inglés presencial: preparación de clases con
 | **v2: herramientas de aula** | En el modo clase: elegir un alumno al azar (sin repetir hasta que hayan salido todos), hacer parejas o grupos de 3 o 4 con los presentes y pasar lista en la proyección. |
 | **v2: vocabulario** | Vocabulario clave por lección, con sugerencias de la IA que elige el profesor. *Vocabulary Lab* para el alumno con tarjetas y repaso espaciado (Leitner). |
 | **v2: ficha del alumno** | Asistencia, resultados por tema, respuestas recientes y notas privadas del profesor, que el alumno nunca ve. |
+| **v3: currículo** | Niveles, unidades y temas con objetivos (cada academia el suyo). Las lecciones se vinculan a un tema y cada grupo ve su cobertura curricular. |
+| **v3: evaluaciones** | Punto de partida, checkpoints y evaluación final por habilidad (reading, listening, speaking, writing, grammar), con progreso respecto al inicio y CEFR estimado (nunca oficial). El profesor decide si el alumno la ve. |
+| **v3: ejercicios de huecos** | Gap fill con `{{respuesta}}` y alternativas `{{Have\|Has}}`. Se corrige por hueco y el alumno no ve las respuestas hasta que contesta. |
+| **v3: alumno** | *Review mistakes* (repasar errores con clave y feedback), *Library* (fichas que el profesor comparte), *Calendar* (clases, entregas, festivos y eventos con inscripción y plazas) y objetivos personales. |
+| **v3: academia** | Sedes, calendario con festivos, eventos y evaluaciones, filtros de progreso por sede o profesor e informe mensual de alumnos activos con CSV. **La regla del informe es una propuesta: DEC-04 sigue sin cerrar.** |
 | **v2: reutilizar e imprimir** | Duplicar una lección completa como borrador nuevo e imprimir una hoja de trabajo con la clave de respuestas en una página aparte. |
 
 Publicar es una acción separada de guardar: preparar o guardar una lección nunca la hace visible a los alumnos.
@@ -79,7 +84,7 @@ npm install
 npm run db:migrate && npm run db:seed
 npm run dev -w apps/api      # API en :3000 (migra al arrancar)
 npm run dev -w apps/web      # Vite en :5173, con proxy a /api
-npm test                     # 36 tests de integración contra PostgreSQL real (base treoo_test)
+npm test                     # 44 tests de integración contra PostgreSQL real (base treoo_test)
 ```
 
 ## Arquitectura
@@ -99,4 +104,4 @@ En producción un solo contenedor sirve la API y el frontend. PostgreSQL y Ollam
 - Rama `claude/mvp`: implementación funcional del plan con tests de API y recorrido E2E en navegador. Requiere la revisión del PO, Datos y Arquitectura antes de declararla aceptada.
 - No se probó la calidad de Ollama con hojas reales: el adaptador está verificado contra un servidor simulado, falta medir sobre la VM.
 - La imagen Docker no se construyó en este entorno (Docker Hub bloqueado). Sí se verificó el mismo build de producción ejecutado desde `dist`.
-- Fuera del MVP: facturación por alumno activo, portabilidad de kardex, Vocabulary Lab, Review Centre, calendario con festivos y tutores.
+- Fuera de esta versión: cobro y suscripciones (solo hay informe de alumnos activos), portabilidad de kardex (propuesta), IPA y audio de pronunciación (pendiente de elegir fuente y licencia), pizarra colaborativa multiusuario, recordatorios por email o push y portal de tutores (excluido).
