@@ -94,8 +94,19 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     if (!(await checkRoom(db, c.academyId, body.roomId))) throw badRequest('That room does not belong to this academy.');
     if (body.lessonId) await readableLesson(db, c, body.lessonId);
     await guardClashes(c.academyId, { id, scheduledOn: body.scheduledOn, startTime: body.startTime, endTime: body.endTime, teacherId: s.teacherId, roomId: body.roomId, groupId: s.groupId }, body.confirmClash);
-    const [u] = await db.update(classSession).set({ scheduledOn: body.scheduledOn, topic: body.topic, lessonId: body.lessonId ?? null, startTime: body.startTime, endTime: body.endTime, roomId: body.roomId }).where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId))).returning();
-    return u;
+    return db.transaction(async (tx) => {
+      // Serialise reassignment with publish so a published snapshot cannot silently change its lesson link.
+      const [current] = await tx.select().from(classSession)
+        .where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId))).for('update');
+      if (!current) throw notFound('Class');
+      if (current.status === 'delivered' && body.scheduledOn !== current.scheduledOn) throw badRequest('A class that was already taught cannot be moved to another date.');
+      const lessonId = body.lessonId === undefined ? current.lessonId : body.lessonId;
+      if (current.publishedAt && lessonId !== current.lessonId) throw conflict('Unpublish this class before changing its lesson.');
+      const [u] = await tx.update(classSession).set({ scheduledOn: body.scheduledOn, topic: body.topic, lessonId,
+        startTime: body.startTime, endTime: body.endTime, roomId: body.roomId })
+        .where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId))).returning();
+      return u;
+    });
   });
 
   app.put('/:id/attendance', async (req) => {
@@ -144,13 +155,19 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
    */
   app.post('/:id/publish', async (req) => {
     const { id } = parse(uuidParam, req.params);
-    const { c, s } = await managed(req, id);
-    if (s.status === 'cancelled') throw badRequest('A cancelled class cannot be published.');
-    const snapshot = s.lessonId ? await buildSnapshot(db, c.academyId, s.lessonId) : null;
-    const [u] = await db.update(classSession).set({ publishedAt: s.publishedAt ?? new Date(), publishedSnapshot: snapshot })
-      .where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId)))
-      .returning({ publishedAt: classSession.publishedAt, publishedSnapshot: classSession.publishedSnapshot });
-    return u;
+    const { c } = await managed(req, id);
+    return db.transaction(async (tx) => {
+      const [s] = await tx.select().from(classSession)
+        .where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId))).for('update');
+      if (!s) throw notFound('Class');
+      if (s.status === 'cancelled') throw badRequest('A cancelled class cannot be published.');
+      // All lesson, activity, vocabulary and material reads see one committed revision.
+      const snapshot = s.lessonId ? await buildSnapshot(tx, c.academyId, s.lessonId) : null;
+      const [u] = await tx.update(classSession).set({ publishedAt: s.publishedAt ?? new Date(), publishedSnapshot: snapshot })
+        .where(and(eq(classSession.id, id), eq(classSession.academyId, c.academyId)))
+        .returning({ publishedAt: classSession.publishedAt, publishedSnapshot: classSession.publishedSnapshot });
+      return u;
+    }, { isolationLevel: 'repeatable read' });
   });
 
   app.post('/:id/cancel', async (req) => {
