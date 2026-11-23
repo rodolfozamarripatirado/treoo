@@ -10,7 +10,7 @@ const addDays = (iso: string, n: number) => { const d = new Date(`${iso}T12:00:0
 
 export function MyCalendar() {
   const from = addDays(today(), -7); const to = addDays(today(), 56);
-  const { data, error, reload } = useLoad(() => api<{ classes: { id: string; scheduledOn: string; topic: string | null; groupName: string; published: boolean }[]; due: { id: string; dueOn: string; prompt: string }[]; events: CalEvent[] }>(`/portal/calendar?from=${from}&to=${to}`), []);
+  const { data, error, reload } = useLoad(() => api<{ classes: { id: string; scheduledOn: string; startTime: string | null; endTime: string | null; status: string; cancelledReason: string | null; topic: string | null; groupName: string; published: boolean }[]; due: { id: string; dueOn: string; prompt: string }[]; events: CalEvent[] }>(`/portal/calendar?from=${from}&to=${to}`), []);
   const [err, setErr] = useState<string | null>(null);
   const { toast, node } = useToast();
   if (error) return <ErrorNote msg={error} />;
@@ -34,8 +34,9 @@ export function MyCalendar() {
           <h2 className="day-head">{fmtDate(date, { weekday: 'long', day: 'numeric', month: 'long' })}{date === today() ? ' — today' : ''}</h2>
           <ul className="list">{list.map((it, i) => (
             <li key={i}>
-              {'c' in it && it.c && (it.c.published ? <Link className="list-link" to={`/me/classes/${it.c.id}`}><strong>{it.c.groupName}</strong><span className="pill">Class</span><span className="muted small">{it.c.topic}</span></Link>
-                : <div className="list-link"><strong>{it.c.groupName}</strong><span className="pill">Class</span><span className="muted small">{it.c.topic ?? ''}</span></div>)}
+              {'c' in it && it.c && it.c.status === 'cancelled' ? <div className="list-link"><strong>{it.c.groupName}</strong><span className="pill absent">Cancelled</span><span className="muted small">{it.c.cancelledReason}</span></div>
+                : 'c' in it && it.c && (it.c.published ? <Link className="list-link" to={`/me/classes/${it.c.id}`}><strong>{it.c.startTime ? `${it.c.startTime.slice(0, 5)} ` : ''}{it.c.groupName}</strong><span className="pill">Class</span><span className="muted small">{it.c.topic}</span></Link>
+                : <div className="list-link"><strong>{it.c.startTime ? `${it.c.startTime.slice(0, 5)} ` : ''}{it.c.groupName}</strong><span className="pill">Class</span><span className="muted small">{it.c.topic ?? ''}</span></div>)}
               {'d' in it && it.d && <Link className="list-link" to="/me/tasks"><strong>Task due</strong><span className="pill draft">Deadline</span><span className="muted small">{it.d.prompt}</span></Link>}
               {'e' in it && it.e && (
                 <div className="list-link">

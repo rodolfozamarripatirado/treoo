@@ -5,7 +5,7 @@ import { useLoad, useSession } from '../session';
 
 interface Dash {
   today: string;
-  classes: { id: string; scheduledOn: string; status: string; publishedAt: string | null; topic: string | null; groupId: string; groupName: string; schedule: string | null; lessonId: string | null; lessonTitle: string | null; students: number; attendanceTaken: number }[];
+  classes: { id: string; scheduledOn: string; startTime: string | null; endTime: string | null; cancelledReason: string | null; status: string; publishedAt: string | null; topic: string | null; groupId: string; groupName: string; schedule: string | null; lessonId: string | null; lessonTitle: string | null; students: number; attendanceTaken: number }[];
   toPublish: { id: string; scheduledOn: string; groupName: string; topic: string | null }[];
   toMark: { assignmentId: string; groupId: string; groupName: string; prompt: string; pending: number }[];
   attention: { id: string; displayName: string; groupName: string; reasons: string[] }[];
@@ -38,12 +38,12 @@ export function Today() {
         ) : todays.map((c) => (
           <article key={c.id} className="class-card">
             <div className="row" style={{ justifyContent: 'space-between' }}>
-              <div><h2 style={{ margin: 0 }}>{c.groupName}</h2><p className="muted small" style={{ margin: 0 }}>{[c.schedule, `${c.students} students`].filter(Boolean).join(', ')}</p></div>
+              <div><h2 style={{ margin: 0 }}>{c.startTime ? `${c.startTime}–${c.endTime} ` : ''}{c.groupName}</h2><p className="muted small" style={{ margin: 0 }}>{c.status === 'cancelled' ? `Cancelled: ${c.cancelledReason ?? ''}` : [c.startTime ? null : c.schedule, `${c.students} students`].filter(Boolean).join(', ')}</p></div>
               <StatusPill status={c.status} />
             </div>
             <p style={{ margin: '12px 0' }}>{c.lessonTitle ? <Link to={`/lessons/${c.lessonId}`}>{c.lessonTitle}</Link> : <span className="muted">No lesson linked yet</span>}</p>
             <div className="row">
-              {c.lessonId && <Link className="btn primary" to={`/classes/${c.id}/present`}>Teach in class mode</Link>}
+              {c.lessonId && c.status !== 'cancelled' && <Link className="btn primary" to={`/classes/${c.id}/present`}>Teach in class mode</Link>}
               <Link className="btn" to={`/classes/${c.id}`}>{c.attendanceTaken ? 'Open class' : 'Take attendance'}</Link>
             </div>
           </article>
@@ -81,7 +81,7 @@ export function Today() {
         <section className="sheet stack">
           <h2 style={{ margin: 0 }}>This week</h2>
           {later.length === 0 ? <p className="muted">Nothing else scheduled in the next 7 days.</p> : later.map((c) => (
-            <Link key={c.id} className="today-row" to={`/classes/${c.id}`}><span>{fmtDate(c.scheduledOn)}, {c.groupName}<span className="muted small"> {c.lessonTitle ?? 'no lesson yet'}</span></span></Link>
+            <Link key={c.id} className="today-row" to={`/classes/${c.id}`}><span>{fmtDate(c.scheduledOn)}{c.startTime ? ` ${c.startTime}` : ''}, {c.groupName}{c.status === 'cancelled' ? ' (cancelled)' : ''}<span className="muted small"> {c.lessonTitle ?? 'no lesson yet'}</span></span></Link>
           ))}
         </section>
 

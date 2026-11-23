@@ -25,6 +25,7 @@ Plataforma SaaS para academias de inglés presencial: preparación de clases con
 | **v3: ejercicios de huecos** | Gap fill con `{{respuesta}}` y alternativas `{{Have\|Has}}`. Se corrige por hueco y el alumno no ve las respuestas hasta que contesta. |
 | **v3: alumno** | *Review mistakes* (repasar errores con clave y feedback), *Library* (fichas que el profesor comparte), *Calendar* (clases, entregas, festivos y eventos con inscripción y plazas) y objetivos personales. |
 | **v3: academia** | Sedes, calendario con festivos, eventos y evaluaciones, filtros de progreso por sede o profesor e informe mensual de alumnos activos con CSV. **La regla del informe es una propuesta: DEC-04 sigue sin cerrar.** |
+| **Enablers (EXT-T01 mínimo, modelo de tiempo, versionado curricular)** | **Publicar congela** el contenido de la lección: editarla después no cambia lo que ven los alumnos hasta que el profesor pulsa *Update what students see*. Los **ejercicios ya contestados quedan bloqueados**, y para cambiarlos se crea una versión nueva. Hay **hora de inicio y fin, aulas y zona horaria** de academia, con aviso de **choque** de profesor, aula o grupo (intervalos semiabiertos) que se puede confirmar, y clases **canceladas** con motivo. La **asistencia** se calcula como (present + late) / (present + late + absent): *excused* y canceladas no cuentan. El **currículo archiva** en lugar de borrar, marca temas *Required* y publica **versiones inmutables**; cada grupo sigue la versión asignada. |
 | **v2: reutilizar e imprimir** | Duplicar una lección completa como borrador nuevo e imprimir una hoja de trabajo con la clave de respuestas en una página aparte. |
 
 Publicar es una acción separada de guardar: preparar o guardar una lección nunca la hace visible a los alumnos.
@@ -84,7 +85,7 @@ npm install
 npm run db:migrate && npm run db:seed
 npm run dev -w apps/api      # API en :3000 (migra al arrancar)
 npm run dev -w apps/web      # Vite en :5173, con proxy a /api
-npm test                     # 44 tests de integración contra PostgreSQL real (base treoo_test)
+npm test                     # 51 tests de integración contra PostgreSQL real (base treoo_test)
 ```
 
 ## Arquitectura

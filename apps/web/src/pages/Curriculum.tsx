@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
-import { api } from '../api';
+import { api, fmtDate } from '../api';
 import { ErrorNote, Loading, useToast } from '../components/ui';
 import { useLoad, useSession } from '../session';
 
-export interface Topic { id?: string; title: string; objective: string | null; skill: string | null }
+export interface Topic { id?: string; title: string; objective: string | null; skill: string | null; required?: boolean }
+interface Plan { id: string; level: string; version: number; notes: string | null; publishedAt: string; publishedBy: string; topics: number; groups: number }
 export interface Unit { id: string; level: string; position: number; title: string; description: string | null; topics: Topic[] }
 const SKILLS = ['grammar', 'vocabulary', 'reading', 'listening', 'speaking', 'writing', 'interaction', 'mediation'];
 
@@ -16,6 +17,10 @@ export function Curriculum() {
   const [editing, setEditing] = useState<Unit | 'new' | null>(null);
   const shown = level || levels[0] || '';
   const units = (all.data ?? []).filter((u) => u.level === shown);
+  const plans = useLoad(() => api<Plan[]>('/curriculum/plans'), []);
+  const [notes, setNotes] = useState('');
+  const [perr, setPerr] = useState<string | null>(null);
+  const levelPlans = (plans.data ?? []).filter((p) => p.level === shown);
   return (
     <>
       <div className="page-head">
@@ -27,12 +32,26 @@ export function Curriculum() {
       </div>
       {!all.data ? <Loading /> : levels.length === 0 && editing !== 'new' ? <div className="empty"><p>No curriculum yet.{isAdmin ? ' Create the first unit.' : ''}</p></div> : null}
       {editing === 'new' && <UnitEditor initial={{ id: '', level: shown || 'B1', position: 0, title: '', description: null, topics: [{ title: '', objective: null, skill: null }] }} onDone={() => { setEditing(null); all.reload(); }} />}
+      {shown && (
+        <section className="sheet stack" style={{ marginBottom: 16 }}>
+          <div className="row" style={{ justifyContent: 'space-between' }}><h2 style={{ margin: 0 }}>Published versions, {shown}</h2>{levelPlans[0] && <span className="pill ready">Latest: version {levelPlans[0].version}</span>}</div>
+          <p className="muted small" style={{ margin: 0 }}>A version freezes the required topics at that moment. Groups follow the version assigned to them, so later edits here never change their coverage history.</p>
+          {levelPlans.map((p) => <div key={p.id} className="today-row"><span><strong>Version {p.version}</strong><span className="muted small"> {fmtDate(p.publishedAt)}, {p.publishedBy}{p.notes ? `, ${p.notes}` : ''}</span></span><span className="muted small">{p.topics} topics, {p.groups} {p.groups === 1 ? 'group' : 'groups'}</span></div>)}
+          {isAdmin && (<>
+            <ErrorNote msg={perr} />
+            <div className="row" style={{ alignItems: 'end' }}>
+              <label className="field" style={{ flex: 1, minWidth: 220 }}>What changed<input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. Added Unit 4" /></label>
+              <button className="btn" onClick={async () => { setPerr(null); try { await api('/curriculum/plans', { body: { level: shown, notes } }); setNotes(''); plans.reload(); } catch (e) { setPerr((e as Error).message); } }}>Publish new version</button>
+            </div>
+          </>)}
+        </section>
+      )}
       <div className="stack">
         {units.map((u) => editing !== 'new' && editing?.id === u.id ? <UnitEditor key={u.id} initial={u} onDone={() => { setEditing(null); all.reload(); }} /> : (
           <section key={u.id} className="sheet stack">
             <div className="row" style={{ justifyContent: 'space-between' }}><h2 style={{ margin: 0 }}>{u.title}</h2>{isAdmin && <button className="btn quiet" onClick={() => setEditing(u)}>Edit</button>}</div>
             {u.description && <p className="muted" style={{ margin: 0 }}>{u.description}</p>}
-            <ol className="stops">{u.topics.map((t) => <li key={t.id} className="stop"><div className="stop-card"><div className="row" style={{ justifyContent: 'space-between' }}><strong>{t.title}</strong>{t.skill && <span className="pill">{t.skill}</span>}</div>{t.objective && <span className="small">{t.objective}</span>}</div></li>)}</ol>
+            <ol className="stops">{u.topics.map((t) => <li key={t.id} className="stop"><div className="stop-card"><div className="row" style={{ justifyContent: 'space-between' }}><strong>{t.title}</strong><span className="row">{t.required === false && <span className="pill">Optional</span>}{t.skill && <span className="pill">{t.skill}</span>}</span></div>{t.objective && <span className="small">{t.objective}</span>}</div></li>)}</ol>
           </section>
         ))}
       </div>
@@ -67,15 +86,15 @@ function UnitEditor({ initial, onDone }: { initial: Unit; onDone: () => void }) 
           <input aria-label="Topic" placeholder="Topic" value={t.title} onChange={(e) => setT(i, { title: e.target.value })} />
           <select aria-label="Skill" value={t.skill ?? ''} onChange={(e) => setT(i, { skill: e.target.value || null })}><option value="">Skill…</option>{SKILLS.map((s) => <option key={s}>{s}</option>)}</select>
           <input aria-label="Objective" placeholder="Can-do objective" value={t.objective ?? ''} onChange={(e) => setT(i, { objective: e.target.value })} />
-          <span />
-          <button className="btn quiet" style={{ color: 'var(--alert)' }} onClick={() => setU({ ...u, topics: u.topics.filter((_, j) => j !== i) })}>Remove</button>
+          <label className="check"><input type="checkbox" checked={t.required !== false} onChange={(e) => setT(i, { required: e.target.checked })} />Required</label>
+          <button className="btn quiet" style={{ color: 'var(--alert)' }} title="Removed topics are archived, not deleted" onClick={() => setU({ ...u, topics: u.topics.filter((_, j) => j !== i) })}>Remove</button>
         </div>
       ))}
       <div className="row">
         <button className="btn" onClick={() => setU({ ...u, topics: [...u.topics, { title: '', objective: null, skill: null }] })}>Add topic</button>
         <button className="btn primary" disabled={!u.title.trim() || !u.level.trim()} onClick={save}>Save unit</button>
         <button className="btn quiet" onClick={onDone}>Cancel</button>
-        {initial.id && <button className="btn quiet" style={{ color: 'var(--alert)', marginLeft: 'auto' }} onClick={async () => { if (confirm(`Delete “${initial.title}” and its topics?`)) { await api(`/curriculum/units/${initial.id}`, { method: 'DELETE' }); onDone(); } }}>Delete unit</button>}
+        {initial.id && <button className="btn quiet" style={{ color: 'var(--alert)', marginLeft: 'auto' }} onClick={async () => { if (confirm(`Archive “${initial.title}”? It disappears from the curriculum but stays in lessons and published versions.`)) { await api(`/curriculum/units/${initial.id}`, { method: 'DELETE' }); onDone(); } }}>Archive unit</button>}
       </div>
       {node}
     </section>

@@ -8,6 +8,11 @@ interface Report { month: string; rule: string; active: number; enrolled: number
 
 export function Academy() {
   const sites = useLoad(() => api<Site[]>('/academy/sites'), []);
+  const settings = useLoad(() => api<{ timezone: string; today: string }>('/academy/settings'), []);
+  const rooms = useLoad(() => api<{ id: string; name: string; capacity: number | null; siteId: string; siteName: string }[]>('/academy/rooms'), []);
+  const [tz, setTz] = useState('');
+  const [rf, setRf] = useState({ siteId: '', name: '', capacity: '' });
+  const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : ['Europe/Dublin'];
   const [form, setForm] = useState({ name: '', address: '' });
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
   const report = useLoad(() => api<Report>(`/academy/billing/active-students?month=${month}`), [month]);
@@ -17,6 +22,22 @@ export function Academy() {
     <>
       <div className="page-head"><div><h1>Academy</h1><p className="muted">Sites and the monthly count of active students.</p></div></div>
       <div className="today-grid">
+        <section className="sheet stack">
+          <h2 style={{ margin: 0 }}>Time zone</h2>
+          <p className="muted small" style={{ margin: 0 }}>Class times, deadlines and “today” use this zone. Today here is {settings.data?.today ?? '…'}.</p>
+          <div className="row" style={{ alignItems: 'end' }}>
+            <label className="field" style={{ flex: 1 }}><span className="sr-only">Time zone</span><select value={tz || settings.data?.timezone || ''} onChange={(e) => setTz(e.target.value)}>{zones.map((z) => <option key={z}>{z}</option>)}</select></label>
+            <button className="btn" disabled={!tz || tz === settings.data?.timezone} onClick={async () => { setErr(null); try { await api('/academy/settings', { method: 'PUT', body: { timezone: tz } }); settings.reload(); toast('Time zone saved'); } catch (e) { setErr((e as Error).message); } }}>Save</button>
+          </div>
+          <h2 style={{ margin: '12px 0 0' }}>Rooms</h2>
+          {(rooms.data ?? []).map((r) => <div key={r.id} className="today-row"><span>{r.name}<span className="muted small"> {r.siteName}</span></span><span className="muted small">{r.capacity ? `${r.capacity} seats` : ''}</span></div>)}
+          <div className="grid-2">
+            <label className="field">Site<select value={rf.siteId} onChange={(e) => setRf({ ...rf, siteId: e.target.value })}><option value="">Choose a site</option>{(sites.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+            <label className="field">Room name<input value={rf.name} onChange={(e) => setRf({ ...rf, name: e.target.value })} /></label>
+            <label className="field">Seats<input inputMode="numeric" value={rf.capacity} onChange={(e) => setRf({ ...rf, capacity: e.target.value })} /></label>
+          </div>
+          <button className="btn" style={{ justifySelf: 'start' }} disabled={!rf.siteId || !rf.name.trim()} onClick={async () => { setErr(null); try { await api('/academy/rooms', { body: { siteId: rf.siteId, name: rf.name, capacity: rf.capacity ? Number(rf.capacity) : null } }); setRf({ siteId: rf.siteId, name: '', capacity: '' }); rooms.reload(); toast('Room added'); } catch (e) { setErr((e as Error).message); } }}>Add room</button>
+        </section>
         <section className="sheet stack">
           <h2 style={{ margin: 0 }}>Sites</h2>
           <ErrorNote msg={err} />

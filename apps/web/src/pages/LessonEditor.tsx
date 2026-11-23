@@ -262,14 +262,15 @@ export function LessonEditor() {
 }
 
 function LessonExercises({ lesson, topic }: { lesson: Lesson; topic: string }) {
-  const [items, setItems] = useState<Exercise[]>(lesson.exercises ?? []);
-  const [editing, setEditing] = useState<Exercise | 'new' | null>(null);
+  const [items, setItems] = useState<(Exercise & { attempts?: number })[]>(lesson.exercises ?? []);
+  const [editing, setEditing] = useState<(Exercise & { attempts?: number; asNewVersion?: boolean }) | 'new' | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const saveEx = async (e: ExerciseDraft) => {
     setErr(null);
     try {
       if (editing === 'new') { const x = await api<Exercise>('/exercises', { body: { ...e, lessonId: lesson.id, topic: e.topic || topic || null } }); setItems([...items, x]); }
-      else if (editing) { const x = await api<Exercise>(`/exercises/${editing.id}`, { method: 'PUT', body: e }); setItems(items.map((i) => (i.id === x.id ? x : i))); }
+      else if (editing?.asNewVersion) { const x = await api<Exercise>(`/exercises/${editing.id}/new-version`, { body: e }); setItems([...items, x]); }
+      else if (editing) { const x = await api<Exercise>(`/exercises/${editing.id}`, { method: 'PUT', body: e }); setItems(items.map((i) => (i.id === x.id ? { ...x, attempts: i.attempts } : i))); }
       setEditing(null);
     } catch (x) { setErr((x as Error).message); }
   };
@@ -282,8 +283,13 @@ function LessonExercises({ lesson, topic }: { lesson: Lesson; topic: string }) {
       {items.map((e) => editing !== 'new' && editing?.id === e.id ? <ExerciseEditor key={e.id} initial={e} onSave={saveEx} onCancel={() => setEditing(null)} /> : (
         <div key={e.id} className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', borderTop: '1px solid var(--rule)', paddingTop: 10 }}>
           <ExerciseSummary e={e} />
-          <span className="row"><button className="btn quiet" onClick={() => setEditing(e)}>Edit</button>
-            <button className="btn quiet" style={{ color: 'var(--alert)' }} onClick={async () => { await api(`/exercises/${e.id}`, { method: 'DELETE' }); setItems(items.filter((i) => i.id !== e.id)); }}>Delete</button></span>
+          {e.attempts ? (
+            <span className="row"><span className="pill" title="Students have answered it, so it is locked to keep their marks meaningful">Answered by {e.attempts}, locked</span>
+              <button className="btn quiet" onClick={() => setEditing({ ...e, asNewVersion: true })}>Create new version</button></span>
+          ) : (
+            <span className="row"><button className="btn quiet" onClick={() => setEditing(e)}>Edit</button>
+              <button className="btn quiet" style={{ color: 'var(--alert)' }} onClick={async () => { await api(`/exercises/${e.id}`, { method: 'DELETE' }); setItems(items.filter((i) => i.id !== e.id)); }}>Delete</button></span>
+          )}
         </div>
       ))}
       {editing === 'new' && <ExerciseEditor onSave={saveEx} onCancel={() => setEditing(null)} />}
