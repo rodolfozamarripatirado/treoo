@@ -4,7 +4,9 @@ import { api, type Lesson } from '../api';
 import { Dialog, ErrorNote, Loading, RouteBar } from '../components/ui';
 import { useLoad } from '../session';
 
-interface SessionDetail { id: string; group: { name: string }; lesson: Lesson | null; sharedNotes: string | null; privateNotes: string | null }
+interface SessionDetail { id: string; group: { name: string }; lesson: Lesson | null; sharedNotes: string | null; privateNotes: string | null; roster: { id: string; displayName: string; status: Att | null }[] }
+type Att = 'present' | 'absent' | 'late' | 'excused';
+const shuffle = <T,>(a: T[]) => { const b = [...a]; for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [b[i], b[j]] = [b[j]!, b[i]!]; } return b; };
 const COLOURS = ['#FFE45C', '#FFFFFF', '#7FE0D6', '#FF8A80'];
 
 const fmt = (s: number) => { const a = Math.abs(Math.round(s)); return `${s < 0 ? '+' : ''}${Math.floor(a / 60)}:${String(a % 60).padStart(2, '0')}`; };
@@ -27,6 +29,12 @@ export function Present() {
   const [finish, setFinish] = useState(false);
   const [notes, setNotes] = useState({ sharedNotes: '', privateNotes: '', shareBoard: true });
   const [err, setErr] = useState<string | null>(null);
+  const [tool, setTool] = useState<null | 'pick' | 'teams' | 'roll'>(null);
+  const [roll, setRoll] = useState<Record<string, Att>>({});
+  const [picked, setPicked] = useState<string | null>(null);
+  const [usedPicks, setUsedPicks] = useState<string[]>([]);
+  const [teamSize, setTeamSize] = useState(2);
+  const [teams, setTeams] = useState<string[][]>([]);
   const canvas = useRef<HTMLCanvasElement>(null);
   const stage = useRef<HTMLDivElement>(null);
   const last = useRef<{ x: number; y: number } | null>(null);
@@ -37,7 +45,33 @@ export function Present() {
   const spent = elapsed[i] ?? 0;
   const remaining = planned != null ? planned - spent : null;
 
-  useEffect(() => { if (data) setNotes((n) => ({ ...n, sharedNotes: data.sharedNotes ?? '', privateNotes: data.privateNotes ?? '' })); }, [data]);
+  useEffect(() => {
+    if (!data) return;
+    setNotes((n) => ({ ...n, sharedNotes: data.sharedNotes ?? '', privateNotes: data.privateNotes ?? '' }));
+    setRoll(Object.fromEntries(data.roster.filter((r) => r.status).map((r) => [r.id, r.status!])));
+  }, [data]);
+  // Only students marked present or late take part; before the register is taken, everyone does.
+  const inClass = (data?.roster ?? []).filter((r) => Object.keys(roll).length === 0 || roll[r.id] === 'present' || roll[r.id] === 'late');
+  const pick = () => {
+    const pool = inClass.filter((r) => !usedPicks.includes(r.id));
+    const from = pool.length ? pool : inClass;
+    const next = from[Math.floor(Math.random() * from.length)];
+    if (!next) return;
+    setPicked(next.displayName); setUsedPicks(pool.length ? [...usedPicks, next.id] : [next.id]);
+  };
+  const makeTeams = (size: number) => {
+    const names = shuffle(inClass.map((r) => r.displayName));
+    const n = Math.max(1, Math.round(names.length / size));
+    const out: string[][] = Array.from({ length: n }, () => []);
+    names.forEach((nm, i) => out[i % n]!.push(nm));
+    setTeamSize(size); setTeams(out);
+  };
+  const cycle: Att[] = ['present', 'late', 'absent', 'excused'];
+  const saveRoll = async (next: Record<string, Att>) => {
+    setRoll(next);
+    try { await api(`/sessions/${id}/attendance`, { method: 'PUT', body: { records: Object.entries(next).map(([studentId, status]) => ({ studentId, status })) } }); }
+    catch (e) { setErr((e as Error).message); }
+  };
   useEffect(() => {
     if (!running) return;
     const t = setInterval(() => setElapsed((e) => { const c = [...e]; c[i] = (c[i] ?? 0) + 1; return c; }), 1000);
@@ -121,6 +155,27 @@ export function Present() {
           <h2>{act?.title || 'Activity'}</h2>
           {act?.instructions && <p>{act.instructions}</p>}
         </div>
+        {tool && (
+          <div className="tool-overlay" role="dialog" aria-label="Class tool">
+            {tool === 'pick' && <div className="stack" style={{ justifyItems: 'center' }}>
+              <div className="picked" aria-live="assertive">{picked ?? 'Ready?'}</div>
+              <div className="row"><button className="btn on" onClick={pick}>{picked ? 'Pick again' : 'Pick a student'}</button><button className="btn" onClick={() => setTool(null)}>Close</button></div>
+              <span className="small" style={{ opacity: .7 }}>Nobody is picked twice until everyone has had a turn. {inClass.length} in class.</span>
+            </div>}
+            {tool === 'teams' && <div className="stack" style={{ justifyItems: 'center', width: '100%' }}>
+              <div className="row">{[2, 3, 4].map((n) => <button key={n} className={`btn ${teamSize === n && teams.length ? 'on' : ''}`} onClick={() => makeTeams(n)}>{n === 2 ? 'Pairs' : `Groups of ${n}`}</button>)}<button className="btn" onClick={() => setTool(null)}>Close</button></div>
+              <div className="teams">{teams.map((t, i) => <div key={i} className="team"><h3>{teamSize === 2 ? 'Pair' : 'Group'} {i + 1}</h3>{t.map((nm) => <div key={nm}>{nm}</div>)}</div>)}</div>
+            </div>}
+            {tool === 'roll' && <div className="stack" style={{ justifyItems: 'center', width: '100%' }}>
+              <h2 style={{ fontSize: '2rem' }}>Register — tap to change</h2>
+              <div className="roll">{(data.roster).map((r) => (
+                <button key={r.id} data-s={roll[r.id] ?? ''} onClick={() => saveRoll({ ...roll, [r.id]: cycle[(cycle.indexOf(roll[r.id] ?? 'excused') + 1) % cycle.length]! })}>
+                  {r.displayName}<span className="small">{roll[r.id] ?? 'not taken'}</span>
+                </button>))}</div>
+              <div className="row"><button className="btn" onClick={() => saveRoll(Object.fromEntries(data.roster.map((r) => [r.id, 'present' as Att])))}>Everyone present</button><button className="btn on" onClick={() => setTool(null)}>Done</button></div>
+            </div>}
+          </div>
+        )}
         <canvas ref={canvas} className="board" style={{ pointerEvents: drawing ? 'auto' : 'none', width: '100%', height: '100%' }}
           onPointerDown={down} onPointerMove={move} onPointerUp={() => (last.current = null)} onPointerLeave={() => (last.current = null)} aria-label="Board" />
       </div>
@@ -144,6 +199,9 @@ export function Present() {
             {drawing && COLOURS.map((c) => <button key={c} className="swatch" style={{ background: c }} aria-label={`Colour ${c}`} aria-pressed={colour === c} onClick={() => setColour(c)} />)}
             {drawn && <button className="btn" onClick={clear}>Clear</button>}
           </div>
+          <button className="btn" onClick={() => setTool(tool === 'roll' ? null : 'roll')}>Register</button>
+          <button className="btn" onClick={() => { setTool(tool === 'pick' ? null : 'pick'); }}>Pick</button>
+          <button className="btn" onClick={() => { setTool(tool === 'teams' ? null : 'teams'); if (!teams.length) makeTeams(2); }}>Groups</button>
           <button className="btn" onClick={fullscreen}>Full screen</button>
           <button className="btn on" onClick={() => setFinish(true)}>Finish class</button>
         </div>

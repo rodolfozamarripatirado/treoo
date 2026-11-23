@@ -16,12 +16,16 @@ import { Groups, GroupDetail } from './pages/Groups';
 import { People } from './pages/People';
 import { Progress } from './pages/Progress';
 import { MyClasses, MyClass, MyTasks, MyProgress } from './pages/Student';
+import { Today } from './pages/Today';
+import { StudentProfile } from './pages/StudentProfile';
+import { LessonPrint } from './pages/LessonPrint';
+import { VocabLab } from './pages/VocabLab';
 
 function Home() {
   const { me } = useSession();
   const role = me?.active?.role;
   if (!role) return <div className="sheet"><h1>No academy yet</h1><p>Your account is not linked to an academy. Ask your academy administrator to add you.</p></div>;
-  return <Navigate to={role === 'student' ? '/me' : role === 'admin' ? '/groups' : '/prepare'} replace />;
+  return <Navigate to={role === 'student' ? '/me' : '/today'} replace />;
 }
 
 function App() {
@@ -32,8 +36,12 @@ function App() {
     <Routes>
       <Route path="/login" element={<Navigate to="/" replace />} />
       <Route path="/classes/:id/present" element={<Present />} />
+      <Route path="/lessons/:id/print" element={<LessonPrint />} />
       <Route element={<Shell />}>
         <Route path="/" element={<Home />} />
+        <Route path="/today" element={<Today />} />
+        <Route path="/students/:id" element={<StudentProfile />} />
+        <Route path="/me/vocab" element={<VocabLab />} />
         <Route path="/prepare" element={<Prepare />} />
         <Route path="/prepare/capture" element={<Capture />} />
         <Route path="/lessons/new" element={<LessonEditor />} />

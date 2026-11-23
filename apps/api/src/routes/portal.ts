@@ -3,7 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { ctx, type Ctx } from '../auth/context.js';
 import type { Db } from '../db/client.js';
-import { activity, assignment, attempt, attendance, classSession, enrollment, exercise, lesson, studentGroup } from '../db/schema.js';
+import { activity, assignment, attempt, attendance, classSession, enrollment, exercise, lesson, studentGroup, vocabItem } from '../db/schema.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { parse, uuidParam } from '../lib/validate.js';
 import { autoScore } from './exercises.js';
@@ -50,7 +50,9 @@ export const portalRoutes: FastifyPluginAsync = async (app) => {
       .from(activity).where(and(eq(activity.lessonId, s.lessonId), eq(activity.academyId, c.academyId))).orderBy(asc(activity.position)) : [];
     const tasks = await db.select({ id: assignment.id, prompt: exercise.prompt, dueOn: assignment.dueOn }).from(assignment)
       .innerJoin(exercise, eq(exercise.id, assignment.exerciseId)).where(and(eq(assignment.sessionId, id), eq(assignment.academyId, c.academyId)));
-    return { ...s, activities: acts, assignments: tasks };
+    const vocab = s.lessonId ? await db.select({ id: vocabItem.id, term: vocabItem.term, partOfSpeech: vocabItem.partOfSpeech, meaning: vocabItem.meaning, example: vocabItem.example })
+      .from(vocabItem).where(and(eq(vocabItem.lessonId, s.lessonId), eq(vocabItem.academyId, c.academyId))).orderBy(asc(vocabItem.position)) : [];
+    return { ...s, activities: acts, assignments: tasks, vocab };
   });
 
   app.get('/assignments', async (req) => {

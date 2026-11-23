@@ -32,6 +32,16 @@ export const LessonDraftSchema = z.object({
 });
 
 export type LessonDraft = z.infer<typeof LessonDraftSchema>;
+
+export const VocabSuggestionSchema = z.object({
+  items: z.array(z.object({
+    term: z.string().min(1).max(120),
+    partOfSpeech: z.string().max(40).nullable().optional(),
+    meaning: z.string().max(400).nullable().optional(),
+    example: z.string().max(400).nullable().optional(),
+  })).max(20),
+});
+export type VocabSuggestion = z.infer<typeof VocabSuggestionSchema>['items'];
 export type AiOrigin = 'mock' | 'ollama';
 
 export interface DraftRequest {
@@ -47,7 +57,14 @@ export interface AiAdapter {
   status(): Promise<{ mode: Env['AI_MODE']; available: boolean; detail: string; models?: { text: string; vision: string } }>;
   extract(image: { base64: string; mime: string }): Promise<{ text: string; origin: AiOrigin }>;
   draftLesson(req: DraftRequest): Promise<{ draft: LessonDraft; origin: AiOrigin; model: string }>;
+  suggestVocab(req: { sourceText: string; level?: string | null; max?: number }): Promise<{ items: VocabSuggestion; origin: AiOrigin }>;
 }
+
+const vocabJsonSchema = {
+  type: 'object', required: ['items'],
+  properties: { items: { type: 'array', items: { type: 'object', required: ['term', 'partOfSpeech', 'meaning', 'example'],
+    properties: { term: { type: 'string' }, partOfSpeech: { type: 'string' }, meaning: { type: 'string' }, example: { type: 'string' } } } } },
+};
 
 export class AiUnavailableError extends Error {}
 
@@ -166,6 +183,20 @@ export function createOllamaAdapter(env: Env, fetchImpl: typeof fetch = fetch): 
       if (!result.success) throw new AiUnavailableError('The AI draft did not match the expected structure. Try again or continue manually.');
       return { draft: result.data, origin: 'ollama', model: env.OLLAMA_TEXT_MODEL };
     },
+    async suggestVocab(r) {
+      const content = await call({
+        model: env.OLLAMA_TEXT_MODEL, stream: false, think: false, format: vocabJsonSchema, options: { temperature: 0.2 },
+        messages: [{ role: 'user', content: [
+          `Pick up to ${r.max ?? 10} key vocabulary items (words, collocations, phrasal verbs) a ${r.level ?? 'B1'} learner should learn from this material.`,
+          'For each give the part of speech, a short learner-friendly meaning in simple British English, and an example sentence from or close to the material.',
+          'Use only language that appears in the material.', '', 'MATERIAL:', r.sourceText.slice(0, 8000)].join('\n') }],
+      });
+      let parsed: unknown;
+      try { parsed = JSON.parse(content); } catch { throw new AiUnavailableError('The AI returned an invalid vocabulary list. Try again or add words manually.'); }
+      const result = VocabSuggestionSchema.safeParse(parsed);
+      if (!result.success) throw new AiUnavailableError('The AI vocabulary list did not match the expected structure.');
+      return { items: result.data.items.filter((i) => i.term.trim()), origin: 'ollama' };
+    },
   };
 }
 
@@ -247,6 +278,14 @@ export function createMockAdapter(): AiAdapter {
         },
       };
     },
+    async suggestVocab(r) {
+      // Simulated: longest distinct words of the material, without meanings. Clearly a placeholder.
+      const stop = new Set(['students', 'complete', 'sentences', 'following', 'example', 'speaking', 'someone', 'between', 'because', 'something']);
+      const words = [...new Set((r.sourceText.toLowerCase().match(/[a-z][a-z'-]{5,}/g) ?? []).filter((w) => !stop.has(w)))];
+      const picked = words.sort((a, b) => b.length - a.length).slice(0, r.max ?? 8);
+      const sentence = (w: string) => r.sourceText.split(/(?<=[.!?\n])/).map((x) => x.trim()).find((x) => x.toLowerCase().includes(w)) ?? null;
+      return { origin: 'mock', items: picked.map((term) => ({ term, partOfSpeech: null, meaning: null, example: sentence(term) })) };
+    },
   };
 }
 
@@ -257,6 +296,7 @@ export function createManualAdapter(): AiAdapter {
     async status() { return { mode: 'manual', available: false, detail: 'AI assistance is turned off. The manual route is fully available.' }; },
     extract: off,
     draftLesson: off,
+    suggestVocab: off,
   };
 }
 

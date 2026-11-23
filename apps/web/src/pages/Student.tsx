@@ -53,7 +53,7 @@ export function MyClasses() {
 
 export function MyClass() {
   const { id } = useParams();
-  const { data, error } = useLoad(() => api<DiaryRow & { activities: { title: string | null; kind: string | null; instructions: string | null; durationMinutes: number | null }[]; assignments: { id: string; prompt: string; dueOn: string | null }[] }>(`/portal/sessions/${id}`), [id]);
+  const { data, error } = useLoad(() => api<DiaryRow & { activities: { title: string | null; kind: string | null; instructions: string | null; durationMinutes: number | null }[]; assignments: { id: string; prompt: string; dueOn: string | null }[]; vocab: { id: string; term: string; meaning: string | null; example: string | null }[] }>(`/portal/sessions/${id}`), [id]);
   if (error) return <ErrorNote msg={error} />;
   if (!data) return <Loading />;
   return (
@@ -69,6 +69,7 @@ export function MyClass() {
           <ol className="stops">{data.activities.map((a, i) => <li className="stop" key={i}><div className="stop-card"><strong>{a.title}</strong>{a.instructions && <p style={{ margin: 0 }}>{a.instructions}</p>}</div></li>)}</ol>
         </section>
       )}
+      {data.vocab.length > 0 && <section className="sheet stack" style={{ marginBottom: 16 }}><h2 style={{ margin: 0 }}>Key vocabulary</h2><div className="word-list">{data.vocab.map((w) => <div key={w.id}><strong>{w.term}</strong><div className="small">{w.meaning}</div>{w.example && <div className="muted small"><em>{w.example}</em></div>}</div>)}</div><Link className="btn" style={{ justifySelf: 'start' }} to="/me/vocab">Practise in Vocabulary Lab</Link></section>}
       {data.hasBoard && <section className="sheet" style={{ marginBottom: 16 }}><h2>Board</h2><img src={`/api/sessions/${data.id}/board`} alt="Board from class" style={{ maxWidth: '100%', borderRadius: 8 }} /></section>}
       {data.assignments.length > 0 && <section className="sheet"><h2>Tasks</h2><ul>{data.assignments.map((a) => <li key={a.id}>{a.prompt}{a.dueOn ? ` (due ${fmtDate(a.dueOn)})` : ''}</li>)}</ul><Link className="btn primary" to="/me/tasks">Go to my tasks</Link></section>}
     </>

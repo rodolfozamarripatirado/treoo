@@ -210,3 +210,45 @@ export const attempt = treoo.table('attempt', {
   reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
   createdAt: createdAt(),
 }, (t) => [index('attempt_student_idx').on(t.academyId, t.studentId, t.assignmentId)]);
+
+// ---------- v2: vocabulary, spaced review and teacher observations ----------
+
+export const vocabItem = treoo.table('vocab_item', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
+  lessonId: uuid('lesson_id').notNull().references(() => lesson.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull(),
+  term: text('term').notNull(),
+  partOfSpeech: text('part_of_speech'),
+  meaning: text('meaning'),
+  example: text('example'),
+  createdAt: createdAt(),
+}, (t) => [
+  index('vocab_item_lesson_idx').on(t.academyId, t.lessonId, t.position),
+  check('vocab_term_not_blank', sql`length(btrim(${t.term})) > 0`),
+]);
+
+/** Leitner box per student and word: box 1 = review today, box 5 = well known. */
+export const vocabReview = treoo.table('vocab_review', {
+  academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
+  studentId: uuid('student_id').notNull().references(() => appUser.id, { onDelete: 'cascade' }),
+  vocabItemId: uuid('vocab_item_id').notNull().references(() => vocabItem.id, { onDelete: 'cascade' }),
+  box: integer('box').notNull().default(1),
+  nextDue: date('next_due').notNull(),
+  reviews: integer('reviews').notNull().default(0),
+  lapses: integer('lapses').notNull().default(0),
+  updatedAt: updatedAt(),
+}, (t) => [
+  primaryKey({ columns: [t.studentId, t.vocabItemId] }),
+  check('vocab_review_box_range', sql`${t.box} between 1 and 5`),
+]);
+
+/** Private teacher observations about a student. Never visible to students. */
+export const studentNote = treoo.table('student_note', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  academyId: uuid('academy_id').notNull().references(() => academy.id, { onDelete: 'restrict' }),
+  studentId: uuid('student_id').notNull().references(() => appUser.id, { onDelete: 'cascade' }),
+  authorId: uuid('author_id').notNull().references(() => appUser.id, { onDelete: 'restrict' }),
+  body: text('body').notNull(),
+  createdAt: createdAt(),
+}, (t) => [index('student_note_student_idx').on(t.academyId, t.studentId, t.createdAt)]);

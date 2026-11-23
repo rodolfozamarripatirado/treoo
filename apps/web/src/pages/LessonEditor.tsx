@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'reac
 import { ApiError, api, fmtDate, saveWithRetry, type Activity, type Exercise, type Lesson, type Material } from '../api';
 import { AiPill, Dialog, ErrorNote, Loading, RouteBar, useToast } from '../components/ui';
 import { ExerciseEditor, ExerciseSummary, type ExerciseDraft } from '../components/Exercises';
+import { VocabEditor, type Word } from '../components/Vocab';
 
 const KINDS = ['warm-up', 'presentation', 'controlled practice', 'freer practice', 'speaking', 'listening', 'reading', 'writing', 'review', 'homework'];
 
@@ -50,6 +51,8 @@ export function LessonEditor() {
   const [proposed, setProposed] = useState<(ExerciseDraft & { keep: boolean })[]>([]);
   const [material, setMaterial] = useState<Material | null>(null);
   const [showEditor, setShowEditor] = useState(true);
+  const [aiOn, setAiOn] = useState(false);
+  useEffect(() => { api<{ available: boolean }>('/ai/status').then((r) => setAiOn(r.available)).catch(() => setAiOn(false)); }, []);
 
   useEffect(() => {
     setError(null);
@@ -137,7 +140,11 @@ export function LessonEditor() {
             {lesson && <><AiPill origin={lesson.aiOrigin} /><span>Revision {lesson.revision}, saved {fmtDate(lesson.updatedAt, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span></>}
           </div>
         </div>
-        {material && <div className="row pane-toggle"><button className="btn quiet" onClick={() => setShowEditor(!showEditor)}>{showEditor ? 'Show original' : 'Back to editor'}</button></div>}
+        <div className="row">
+          {material && <span className="pane-toggle"><button className="btn quiet" onClick={() => setShowEditor(!showEditor)}>{showEditor ? 'Show original' : 'Back to editor'}</button></span>}
+          {!isNew && <Link className="btn quiet" to={`/lessons/${id}/print`}>Print handout</Link>}
+          {!isNew && <button className="btn quiet" onClick={async () => { try { const r = await api<{ id: string }>(`/lessons/${id}/duplicate`, { method: 'POST' }); toast('Copy created'); nav(`/lessons/${r.id}`); } catch (e) { setError((e as Error).message); } }}>Duplicate</button>}
+        </div>
       </div>
       {incoming && <div className="notice info"><p>This is an unsaved proposal{incoming.origin === 'mock' ? ' from simulated AI' : ` from ${incoming.model}`}. Change anything you like — nothing is stored until you save, and saving never publishes to students.</p></div>}
       <ErrorNote msg={error ?? fieldErr} />
@@ -210,6 +217,7 @@ export function LessonEditor() {
               ))}
             </section>
           )}
+          {!isNew && lesson && <VocabEditor key={lesson.id} lessonId={lesson.id} initial={(lesson as Lesson & { vocab?: Word[] }).vocab ?? []} aiAvailable={aiOn} />}
           {!isNew && lesson && <LessonExercises lesson={lesson} topic={form.topic} />}
         </div>
       </div>
@@ -278,6 +286,7 @@ function LessonReadOnly({ lesson }: { lesson: Lesson }) {
     <>
       <Link className="back" to="/prepare">Back to lessons</Link>
       <div className="notice info"><p>You are reviewing {lesson.ownerName}’s lesson. Only the owner can edit it.</p></div>
+      <div className="row" style={{ marginBottom: 12 }}><Link className="btn" to={`/lessons/${lesson.id}/print`}>Print handout</Link><button className="btn" onClick={async () => { const r = await api<{ id: string }>(`/lessons/${lesson.id}/duplicate`, { method: 'POST' }); window.location.assign(`/lessons/${r.id}`); }}>Make my own copy</button></div>
       <LessonBody lesson={lesson} showNotes />
     </>
   );

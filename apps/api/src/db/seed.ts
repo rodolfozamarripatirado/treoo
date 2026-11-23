@@ -99,10 +99,27 @@ export async function seed(db: Db): Promise<boolean> {
       { academyId: IDS.academyA, ownerId: IDS.ana, lessonId: IDS.lesson, topic: 'Present Perfect', type: 'true_false', prompt: '"Have you ever eaten sushi?" is grammatically correct.', options: null, correctAnswer: true, points: 1 },
       { academyId: IDS.academyA, ownerId: IDS.ana, lessonId: IDS.lesson, topic: 'Present Perfect', type: 'short_answer', prompt: 'Write two sentences about something you have never done.', options: null, correctAnswer: null, points: 2 },
     ]).returning();
+    await tx.insert(s.vocabItem).values([
+      ['have been to', 'phrase', 'have visited a place and come back', 'I have been to Scotland twice.'],
+      ['ever', 'adverb', 'at any time in your life (in questions)', 'Have you ever eaten sushi?'],
+      ['never', 'adverb', 'not at any time', 'She has never seen the sea.'],
+      ['past participle', 'noun', 'the verb form used after have/has, e.g. seen, been, eaten', '"Eaten" is the past participle of "eat".'],
+      ['experience', 'noun', 'something that has happened to you', 'Riding a horse was a great experience.'],
+      ['ride a horse', 'collocation', 'sit on a horse and control it as it moves', 'Have you ever ridden a horse?'],
+    ].map(([term, partOfSpeech, meaning, example], position) => ({ academyId: IDS.academyA, lessonId: IDS.lesson, position, term: term!, partOfSpeech, meaning, example })));
     await tx.insert(s.classSession).values([
       { id: IDS.pastSession, academyId: IDS.academyA, groupId: IDS.groupB1, lessonId: IDS.lesson, teacherId: IDS.ana, scheduledOn: day(-3), topic: 'Present Perfect', status: 'delivered', deliveredAt: new Date(), publishedAt: new Date(), sharedNotes: 'Remember: been TO a place. Homework: tasks below.', privateNotes: 'Tomás struggled with irregular participles — follow up.' },
       { id: IDS.todaySession, academyId: IDS.academyA, groupId: IDS.groupB1, lessonId: IDS.lesson, teacherId: IDS.ana, scheduledOn: day(0), topic: 'Present Perfect' },
     ]);
+    // An older class so the "needs attention" signal has something to show.
+    await tx.insert(s.classSession).values({ id: id('70000000', 3), academyId: IDS.academyA, groupId: IDS.groupB1, lessonId: IDS.lesson, teacherId: IDS.ana, scheduledOn: day(-6), topic: 'Present Perfect', status: 'delivered', deliveredAt: new Date(), publishedAt: null, sharedNotes: 'Intro to experiences.' });
+    await tx.insert(s.attendance).values([
+      { academyId: IDS.academyA, sessionId: id('70000000', 3), studentId: IDS.sam, status: 'present' },
+      { academyId: IDS.academyA, sessionId: id('70000000', 3), studentId: IDS.lucia, status: 'present' },
+      { academyId: IDS.academyA, sessionId: id('70000000', 3), studentId: IDS.tomas, status: 'present' },
+      { academyId: IDS.academyA, sessionId: id('70000000', 3), studentId: IDS.mei, status: 'absent' },
+    ]);
+    await tx.insert(s.studentNote).values({ academyId: IDS.academyA, studentId: IDS.tomas, authorId: IDS.ana, body: 'Mixes up irregular past participles (eaten/ate). Give him the irregular verbs list.' });
     await tx.insert(s.attendance).values([
       { academyId: IDS.academyA, sessionId: IDS.pastSession, studentId: IDS.sam, status: 'present' },
       { academyId: IDS.academyA, sessionId: IDS.pastSession, studentId: IDS.lucia, status: 'present' },

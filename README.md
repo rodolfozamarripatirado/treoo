@@ -16,6 +16,11 @@ Plataforma SaaS para academias de inglés presencial: preparación de clases con
 | Práctica | Ejercicios de opción única, verdadero/falso y respuesta corta. Se asignan a un grupo, con autocorrección en las preguntas cerradas, hasta 3 intentos, y nota y feedback del docente. |
 | Alumno | *My classes* por fecha o por tema (solo lo publicado), tareas e historial, y *My progress*. |
 | Seguimiento | Asistencia y resultados por grupo, por alumno y por tema. |
+| **v2: Today** | Pantalla de inicio del profesor: clases de hoy y de la semana, respuestas por corregir, alumnos con faltas o notas bajas, clases impartidas sin publicar y borradores. |
+| **v2: herramientas de aula** | En el modo clase: elegir un alumno al azar (sin repetir hasta que hayan salido todos), hacer parejas o grupos de 3 o 4 con los presentes y pasar lista en la proyección. |
+| **v2: vocabulario** | Vocabulario clave por lección, con sugerencias de la IA que elige el profesor. *Vocabulary Lab* para el alumno con tarjetas y repaso espaciado (Leitner). |
+| **v2: ficha del alumno** | Asistencia, resultados por tema, respuestas recientes y notas privadas del profesor, que el alumno nunca ve. |
+| **v2: reutilizar e imprimir** | Duplicar una lección completa como borrador nuevo e imprimir una hoja de trabajo con la clave de respuestas en una página aparte. |
 
 Publicar es una acción separada de guardar: preparar o guardar una lección nunca la hace visible a los alumnos.
 
@@ -36,6 +41,8 @@ docker compose --profile ai up -d --build
 docker compose exec ollama ollama pull qwen3:8b
 docker compose exec ollama ollama pull qwen3-vl:4b-instruct
 ```
+
+**Publicar con una URL pública de Cloudflare** (sin dominio ni token): `./deploy/publish.sh` construye, migra, carga la demo, abre un Quick Tunnel e imprime la URL `https://….trycloudflare.com`. La URL cambia si se recrea el túnel.
 
 Si Ollama ya corre fuera de compose, apunta `OLLAMA_URL` a él y no actives el perfil `ai`. Para publicarla con Cloudflare Quick Tunnel: `cloudflared tunnel --url http://localhost:3000`. Con HTTPS, la cookie se marca como `Secure` automáticamente.
 
@@ -63,7 +70,7 @@ npm install
 npm run db:migrate && npm run db:seed
 npm run dev -w apps/api      # API en :3000 (migra al arrancar)
 npm run dev -w apps/web      # Vite en :5173, con proxy a /api
-npm test                     # 25 tests de integración contra PostgreSQL real (base treoo_test)
+npm test                     # 31 tests de integración contra PostgreSQL real (base treoo_test)
 ```
 
 ## Arquitectura

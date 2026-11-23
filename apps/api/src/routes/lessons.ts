@@ -3,7 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { ctx, type Ctx } from '../auth/context.js';
 import type { Db } from '../db/client.js';
-import { activity, appUser, exercise, lesson, material } from '../db/schema.js';
+import { activity, appUser, exercise, lesson, material, vocabItem } from '../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors.js';
 import { idempotent, readKey } from '../lib/idempotency.js';
 import { optText, parse, reqText, uuidParam } from '../lib/validate.js';
@@ -111,7 +111,9 @@ export const lessonRoutes: FastifyPluginAsync = async (app) => {
     const { id } = parse(uuidParam, req.params);
     const l = await readableLesson(db, c, id);
     const exs = await db.select().from(exercise).where(and(eq(exercise.lessonId, id), eq(exercise.academyId, c.academyId))).orderBy(asc(exercise.createdAt));
-    return { ...l, exercises: exs, canEdit: l.ownerId === c.userId };
+    const vocab = await db.select({ id: vocabItem.id, term: vocabItem.term, partOfSpeech: vocabItem.partOfSpeech, meaning: vocabItem.meaning, example: vocabItem.example })
+      .from(vocabItem).where(and(eq(vocabItem.lessonId, id), eq(vocabItem.academyId, c.academyId))).orderBy(asc(vocabItem.position));
+    return { ...l, exercises: exs, vocab, canEdit: l.ownerId === c.userId };
   });
 
   app.post('/', async (req, reply) => {
@@ -154,6 +156,28 @@ export const lessonRoutes: FastifyPluginAsync = async (app) => {
     });
     reply.header('idempotent-replayed', String(r.replayed));
     return reply.status(r.status).send(r.body);
+  });
+
+  /** Reuse: copies activities, exercises and vocabulary into a new draft owned by the caller. Nothing is published. */
+  app.post('/:id/duplicate', async (req, reply) => {
+    const c = ctx(req, 'teacher', 'admin');
+    const { id } = parse(uuidParam, req.params);
+    const src = await readableLesson(db, c, id);
+    const copy = await db.transaction(async (tx) => {
+      const [l] = await tx.insert(lesson).values({
+        academyId: c.academyId, ownerId: c.userId, title: `${src.title} (copy)`.slice(0, 200), topic: src.topic, level: src.level,
+        objective: src.objective, methodology: src.methodology, notes: src.notes, status: 'draft', aiOrigin: src.aiOrigin,
+        // A material belongs to its uploader; only keep the link when copying your own lesson.
+        materialId: src.ownerId === c.userId ? src.materialId : null,
+      }).returning();
+      await writeActivities(tx, c.academyId, l!.id, src.activities.map((a) => ({ kind: a.kind, title: a.title, instructions: a.instructions, durationMinutes: a.durationMinutes })));
+      const exs = await tx.select().from(exercise).where(and(eq(exercise.lessonId, id), eq(exercise.academyId, c.academyId)));
+      if (exs.length) await tx.insert(exercise).values(exs.map(({ id: _i, createdAt: _c, lessonId: _l, ownerId: _o, ...e }) => ({ ...e, ownerId: c.userId, lessonId: l!.id })));
+      const words = await tx.select().from(vocabItem).where(and(eq(vocabItem.lessonId, id), eq(vocabItem.academyId, c.academyId)));
+      if (words.length) await tx.insert(vocabItem).values(words.map(({ id: _i, createdAt: _c, lessonId: _l, ...w }) => ({ ...w, lessonId: l!.id })));
+      return l!;
+    });
+    return reply.status(201).send({ id: copy.id });
   });
 
   app.delete('/:id', async (req) => {

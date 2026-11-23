@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api, fmtDate, type Exercise, type Group, type Person } from '../api';
 import { ErrorNote, Loading, useToast } from '../components/ui';
 import { useLoad, useSession } from '../session';
@@ -64,7 +64,8 @@ export function GroupDetail() {
   const assigns = useLoad(() => (canManage ? api<AssignmentRow[]>(`/assignments?groupId=${id}`) : Promise.resolve([])), [id, canManage]);
   const progress = useLoad(() => (canManage ? api<GroupProgress>(`/progress/group?groupId=${id}`) : Promise.resolve(null)), [id, canManage]);
   const [add, setAdd] = useState('');
-  const [open, setOpen] = useState<string | null>(null);
+  const [sp] = useSearchParams();
+  const [open, setOpen] = useState<string | null>(sp.get('open'));
   const [err, setErr] = useState<string | null>(null);
 
   if (g.error) return <ErrorNote msg={g.error} />;
@@ -83,7 +84,7 @@ export function GroupDetail() {
           {g.data.students.length === 0 && <p className="muted">No students enrolled yet.</p>}
           {g.data.students.map((s) => (
             <div key={s.id} className="row" style={{ justifyContent: 'space-between' }}>
-              <span>{s.displayName} <span className="muted small">{s.email}</span></span>
+              <span><Link to={`/students/${s.id}`}>{s.displayName}</Link> <span className="muted small">{s.email}</span></span>
               {isAdmin && <button className="btn quiet" onClick={() => act(() => api(`/groups/${id}/students/${s.id}`, { method: 'DELETE' }), 'Student removed')}>Remove</button>}
             </div>
           ))}
@@ -112,7 +113,7 @@ export function GroupDetail() {
         <section style={{ marginTop: 20 }}>
           <h2>Attendance and results</h2>
           <div className="table-wrap"><table className="data"><thead><tr><th>Student</th><th>Present</th><th>Late</th><th>Absent</th><th>Excused</th><th>Average</th></tr></thead><tbody>
-            {progress.data.students.map((s) => <tr key={s.id}><td>{s.displayName}</td><td>{s.present}</td><td>{s.late}</td><td>{s.absent}</td><td>{s.excused}</td><td>{s.avgScore == null ? '—' : `${s.avgScore}%`}</td></tr>)}
+            {progress.data.students.map((s) => <tr key={s.id}><td><Link to={`/students/${s.id}`}>{s.displayName}</Link></td><td>{s.present}</td><td>{s.late}</td><td>{s.absent}</td><td>{s.excused}</td><td>{s.avgScore == null ? '—' : `${s.avgScore}%`}</td></tr>)}
           </tbody></table></div>
         </section>
       )}
